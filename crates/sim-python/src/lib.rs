@@ -1,3 +1,4 @@
+mod pick_place;
 mod worker;
 use mujoco_runtime::{Error, JointCommand, JointState, Simulator as CoreSimulator};
 use pyo3::{
@@ -385,6 +386,10 @@ impl PySineTrajectory {
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Simulator>()?;
+    module.add_class::<pick_place::PickPlaceSimulator>()?;
+    module.add("GRIPPER_OPEN", mujoco_runtime::skills::GRIPPER_OPEN)?;
+    module.add("GRIPPER_CLOSED", mujoco_runtime::skills::GRIPPER_CLOSED)?;
+    module.add("CONTROL_PERIOD", mujoco_runtime::skills::CONTROL_PERIOD)?;
     module.add_class::<PySineTrajectory>()?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add(

@@ -115,9 +115,9 @@ impl Session {
     }
 }
 
-type Job = Box<dyn FnOnce(&mut Session) + Send>;
-pub(crate) struct Worker {
-    sender: Mutex<Option<mpsc::Sender<Job>>>,
+type Job<S> = Box<dyn FnOnce(&mut S) + Send>;
+pub(crate) struct Worker<S = Session> {
+    sender: Mutex<Option<mpsc::Sender<Job<S>>>>,
     handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 fn stopped() -> Error {
@@ -125,25 +125,32 @@ fn stopped() -> Error {
 }
 impl Worker {
     pub(crate) fn new(model_dir: Option<PathBuf>, robot: String) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel::<Job>();
+        Self::spawn(move || {
+            let sim = match model_dir {
+                Some(dir) => CoreSimulator::from_model_dir(dir),
+                None => CoreSimulator::from_spec(mujoco_runtime::presets::robot(&robot)?),
+            }?;
+            Ok(Session {
+                sim,
+                task: ReachTask::default(),
+                episode: 0,
+                recorder: None,
+                recording_period: None,
+                telemetry: None,
+            })
+        })
+    }
+}
+impl<S: 'static> Worker<S> {
+    // Construct and destroy the session on its owning thread. S need not be Send:
+    // only jobs and their owned results cross the channel.
+    pub(crate) fn spawn(initialize: impl FnOnce() -> Result<S> + Send + 'static) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel::<Job<S>>();
         let (ready_tx, ready_rx) = mpsc::channel();
         let handle = thread::Builder::new()
             .name("mujoco-worker".into())
             .spawn(move || {
-                let initialized = catch_unwind(AssertUnwindSafe(|| {
-                    let sim = match model_dir {
-                        Some(dir) => CoreSimulator::from_model_dir(dir),
-                        None => CoreSimulator::from_spec(mujoco_runtime::presets::robot(&robot)?),
-                    }?;
-                    Ok::<_, Error>(Session {
-                        sim,
-                        task: ReachTask::default(),
-                        episode: 0,
-                        recorder: None,
-                        recording_period: None,
-                        telemetry: None,
-                    })
-                }));
+                let initialized = catch_unwind(AssertUnwindSafe(initialize));
                 let mut session = match initialized {
                     Ok(Ok(session)) => {
                         let _ = ready_tx.send(Ok(()));
@@ -172,7 +179,7 @@ impl Worker {
     }
     pub(crate) fn access<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut Session) -> Result<T> + Send + 'static,
+        f: impl FnOnce(&mut S) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let sender = self
             .sender
@@ -199,7 +206,7 @@ impl Worker {
 // Dropping Python objects must not block with the GIL held. Closing the channel
 // lets the owning worker destroy MuJoCo allocations; close() explicitly joins
 // while detached. Dropping a JoinHandle merely detaches it.
-impl Drop for Worker {
+impl<S> Drop for Worker<S> {
     fn drop(&mut self) {
         if let Ok(sender) = self.sender.get_mut() {
             sender.take();

@@ -144,6 +144,10 @@ fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
 impl PickPlaceSim {
     pub fn new(config: PickPlaceConfig) -> Result<Self> {
         let spec = presets::robot("so101")?;
+        Self::from_spec(spec, config)
+    }
+    /// Load the pick-and-place scene with an explicitly resolved SO-101 model.
+    pub fn from_spec(spec: robotics_core::RobotSpec, config: PickPlaceConfig) -> Result<Self> {
         let sim = Simulator::from_spec_with_scene(spec, SCENE_TEMPLATE)?;
         let m = &sim.model;
         let missing = |what: &str| Error::Model(format!("pick-place scene is missing {what}"));

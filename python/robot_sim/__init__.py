@@ -1,5 +1,8 @@
 """Rust simulator and optional Gymnasium environment."""
-from ._native import Simulator, SineTrajectory, ACTUATOR_NAMES, __version__
+from ._native import (
+    Simulator, PickPlaceSimulator, SineTrajectory, ACTUATOR_NAMES, __version__,
+    GRIPPER_OPEN, GRIPPER_CLOSED, CONTROL_PERIOD,
+)
 from .config import TaskConfig
 
 def __getattr__(name):
@@ -17,4 +20,7 @@ def __getattr__(name):
         return getattr(wrappers, name)
     raise AttributeError(name)
 
-__all__ = ["Simulator", "RobotEnv", "ACTUATOR_NAMES"]
+__all__ = [
+    "Simulator", "PickPlaceSimulator", "RobotEnv", "ACTUATOR_NAMES",
+    "GRIPPER_OPEN", "GRIPPER_CLOSED", "CONTROL_PERIOD",
+]

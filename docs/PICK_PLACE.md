@@ -114,6 +114,7 @@ Pythonからの待機中は`py.detach`でGILを解放する．
 | `criteria()` | 既定の全`Criteria`フィールドに加え，シーンの`cube_half`と`ScriptedTransport`の`carry_height` |
 | `run_skill(name, max_steps=None)` | `grasp` / `transport` / `place`を現在の状態から実行．上限省略時はSkill既定値を使用．`name`, `status`, `success`, `steps`, `learned`, `reason`を返す |
 | `start_skill(name)`, `skill_step()` | 現在の状態から開始し，1制御ステップずつ実行．状態文字列は`running` / `success` / `failure`．終端後の呼び出しでは物理状態を進めない |
+| `skill_report()` | 実行中または終了したSkillのレポートを状態変更なしで取得．実行中の`status`は`running`．未開始時は`ValueError` |
 | `run_episode(seed)` | Rustの全IKパイプラインを実行し，`EpisodeReport`の全フィールドを辞書で返す．各Skillの辞書には`status`も付加 |
 | `close()` | ワーカーの終了とjoin．複数回の呼び出しが可能 |
 
@@ -238,3 +239,70 @@ Graspは`learned=False`，Transportは保存モデルの推論を使い`learned=
 実測の学習速度を単純に使うと200k〜300kステップは約20〜30分となるが，定期評価の時間は別途必要である．
 記録は`runs/so101-transport/smoke-seed-42/training_summary.json`，`evaluations.jsonl`，`evaluation-seed-2000000.jsonl`に保存した．
 これらとモデルはgit管理対象外であり，今回の変更もユーザーの指示に従ってコミットしていない．
+
+## 8. 学習Transportのパイプライン統合（2026-10-30）
+
+`python/robot_sim/pick_place_pipeline.py`の`run_pick_place_episode(seed, ...)`で，Grasp(IK)，Transport(SAC)，Place(IK)を連続実行する．
+リセットは開始時の1回だけであり，指定seedのGraspが失敗しても別seedへ再試行しない．
+Transportは`model.predict(obs, deterministic=True)`で推論し，Rustの`transported`成立，`dropped`成立，またはステップ上限で停止する．
+Transportが失敗した場合はその時点でepisodeを失敗とし，Placeへ進まない．
+最終成功には3 Skillすべての成功とRustの`placed`成立を要求する．
+`transport="scripted"`ではRustのScriptedTransportを実行する．
+
+`transport_env.py`の`transport_observation`と`transport_command`を学習環境と統合処理で共用する．
+23次元の観測，目標の高さ，実測関節角に対するdelta，前回指令からの変化量制限，関節範囲，および閉じたグリッパ指令は従来と同じである．
+学習環境の報酬，再試行，固定horizon，および終了設定は変更していない．
+評価CLIはモデルと同じディレクトリの`config.json`からhorizon，max_delta，およびrate_limitを読み込む．
+直接関数を使う場合も，同じ値を`max_transport_steps`，`max_delta`，および`rate_limit`へ渡す．
+
+レポートはRustのEpisodeReportと同じフィールドに`dropped`を追加し，最初の失敗までに実行したSkillだけを含む．
+XY誤差の単位はmである．
+学習モデルを使うTransportだけが`learned=True`となる．
+`dropped`はTransport中にRustの落下判定が成立した履歴であり，開始時のテーブル上の状態とPlaceでの意図した解放は数えない．
+`on_step(state, skill_name, learned)`は全Skillの各制御ステップ直後に呼ばれ，動画描画に使える．
+逐次実行したSkillの終了理由を取得するため，Python bindingへ読み取り専用の`skill_report()`を追加した．
+Rustの成功判定と既存Reach処理は変更していない．
+
+```bash
+python examples/python/eval_pick_place.py --transport scripted --episodes 20 --seed 0
+python examples/python/eval_pick_place.py --transport learned \
+  --model runs/so101-transport/smoke-seed-42/best.zip --episodes 5 --seed 0
+```
+
+各episodeのJSON linesをstdoutへ，集計JSONをstderrへ出力する．
+集計は全体成功率，Skillごとの成功数と試行数，全episodeを分母にした成功率，実行された試行だけを分母にした成功率，最終XY誤差の平均/P95/最大，落下数，および学習済みSkill名を含む．
+未実行のSkillは試行数0，実行された試行だけを分母にした成功率は`null`となる．
+同じ`--seed`と`--episodes`を指定すれば，両方式で同じseed列を評価できる．
+
+250kステップの背景学習先`runs/so101-transport/seed-42/`は操作していない．
+新しい学習は開始せず，smokeモデルの読み込みと推論だけで統合を検証した．
+ユーザーの指示に従い，コミットとpushは実行していない．
+
+### 統合の検証結果
+
+上記2コマンドを§6と同じ保存済み`nix develop`環境で実行した．
+全IK版はseeds 0〜19，学習版は同じ先頭5件のseeds 0〜4である．
+学習版には指定されたsmokeモデルの`best.zip`を使い，読み込み時の`num_timesteps`は2,000であった．
+
+| 項目 | 全IK版 | smokeモデル版 |
+|---|---|---|
+| 全体成功 | 20/20（100%） | 0/5（0%） |
+| Grasp成功 | 20/20 | 5/5 |
+| Transport成功 | 20/20 | 0/5 |
+| Place成功 | 20/20 | 未実行（試行0件） |
+| 落下数 | 0 | 0 |
+| 最終XY誤差：平均 / P95 / 最大 | 2.215473 / 2.550412 / 2.738648 mm | 144.282837 / 180.767333 / 188.652089 mm |
+| 学習済みSkill | なし | Transportのみ |
+
+smokeモデル版は5件すべてTransportの150ステップ上限で`reason="timeout"`となり，Placeが実行されないことを確認した．
+全IK版の共通seed 0〜4では5/5成功した．
+この結果は統合処理の動作確認であり，学習TransportからPlaceへの物理的な成功は未確認である．
+評価結果は`/private/tmp/so101-pipeline-scripted-20.jsonl`と`/private/tmp/so101-pipeline-learned-5.jsonl`に，集計はそれぞれの`-summary.json`に保存した．
+
+`cargo test --workspace`は45件成功，`UV_OFFLINE=true UV_CACHE_DIR=/private/tmp/so101-pipeline-uv maturin develop`は終了コード0で完了した．
+`cargo fmt --all --check`と`cargo clippy --workspace --all-targets`も終了コード0で完了した．
+再ビルド後の`pytest -q`は`142 passed, 9 warnings in 60.97s`であった．
+追加した6件は，3 seedの全IK版とRust EpisodeReportの一致，コールバックの回数と状態，読み取り専用レポート，共通観測と行動，および小さなSACモデルによる決定的推論とCLIを検証する．
+小さなSACモデルはテスト内で構築するだけで，学習を実行しない．
+学習版の観測と各行動後の物理状態が，同一seedと同一設定のGoalTransportEnvに完全一致することも確認した．
+警告9件は既存のGymnasium環境チェックによるものである．

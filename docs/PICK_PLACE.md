@@ -1,6 +1,6 @@
 # SO-101 Pick & Place：現状確認・実装・計画
 
-2026-10-30 時点。数値はすべてこのリポジトリで実際に実行した結果のみ記載する。
+2026-10-31 時点。数値はすべてこのリポジトリで実際に実行した結果のみ記載する。
 
 ## 1. 前提認識と実コードの照合
 
@@ -335,3 +335,105 @@ python examples/python/eval_pick_place.py --episodes 200 --seed 0 --transport sc
 
 学習済みモデルは `runs/so101-transport/seed-42/best.zip`（30,000ステップ時点、gitには含めない）。
 出力: `runs/eval/learned-best-200.jsonl`, `runs/eval/scripted-200.jsonl`。
+
+## 10. デモ動画の描画実装と事前検証（2026-10-31）
+
+`examples/python/record_pick_place.py`を追加した．
+既存の`run_pick_place_episode`を使い，各`on_step`の直後の状態を1フレームとして30fpsで保存する．
+追加の物理ステップやSkill間のリセットは行わない．
+終了時は最後の状態を`--hold-frames`回表示し，その間は物理を進めない．
+成功判定と失敗時の打ち切りは既存パイプラインとRustのpredicatesに従う．
+
+### 描画と出力の仕様
+
+Python bindingに`PickPlaceRenderer(sim, width=1280, height=720)`を追加した．
+`render()`は上から下へ並ぶRGB8の`bytes`（`width * height * 3`バイト）を返し，`close()`で描画資源を解放する．
+シミュレータの専用ワーカー上でコンパイル済みモデルをMJBへ保存し，描画側が別のモデルとmjDataを所有する．
+フレームごとに`mjSTATE_INTEGRATION`を読み取り，描画側のコピーにのみ`mj_setState`と`mj_forward`を実行する．
+全関節，立方体の位置・姿勢，およびmocap目標を同じモデルの対応関係で復元するため，Pythonで関節を並べ直す処理はない．
+元のモデル，物理状態，成功判定，Reach処理，およびシーンXMLは変更していない．
+
+macOSはウィンドウを作らないCGLコンテキストを使用する．
+GPUを利用できない場合はAppleのソフトウェア描画へ切り替える．
+当環境ではGLFWが入力サービスへの接続待ちで停止したが，CGLのソフトウェア描画は動作した．
+他OS向けには既存ビューアと同じ非表示GLFWの経路を用意したが，今回は実行していない．
+APIは同一スレッドで使用し，macOSではメインスレッドで生成する．
+`MUJOCO_GL`でバックエンドを切り替えるPython版MuJoCoは使用しない．
+
+固定の自由カメラは注視点`[0.12, 0, 0.12]`，距離0.75m，方位135度，仰角−35度である．
+描画用モデルだけ影の解像度を1024，オフスクリーンのマルチサンプリングを0へ変更し，ソフトウェア描画の負荷を抑える．
+赤い立方体と緑の目標マーカーが見えることをPNGで確認した．
+
+字幕はPillowで描き，seed，現在のSkill，`LEARNED (SAC)`（緑）または`IK (scripted)`（青），および立方体から目標へのXY誤差を表示する．
+終了時には成功・失敗と最終XY誤差も表示する．
+学習モデルと同じディレクトリの`config.json`からhorizon，max_delta，およびrate_limitを復元する．
+`--transport scripted`ではモデルを読み込まず，全IK版を同じ経路で記録できる．
+
+MP4はffmpegへRGBフレームを渡し，H.264 / yuv420p / 30fpsで符号化する実装である．
+一時ファイルを使い，ffmpegが正常終了した場合だけ指定出力先へ移す．
+出力先には`.jsonl`（エピソードの結果），`.summary.json`（集計とフレーム数），および`_grasp.png` / `_transport.png` / `_place.png`（最初のエピソードの各Skillの最終フレーム）も保存する．
+エピソードごとのJSON linesはstdout，成功・誤差と集計はstderrへ出す．
+`runs/so101-transport/`配下を出力先に指定することは拒否する．
+
+### 実行コマンド
+
+`flake.nix`のdevShell packagesへ`pkgs.ffmpeg`を追加した．
+Pillowは既存のlearning依存環境に導入済みである．
+通常の開発環境では以下を実行する．
+
+```bash
+nix develop
+maturin develop
+python examples/python/record_pick_place.py \
+  --model runs/so101-transport/seed-42/best.zip \
+  --seeds 0 1 7 25 42 99 --width 1280 --height 720 \
+  --transport learned --hold-frames 90 --output runs/video/pick_place_demo.mp4
+ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames \
+  -show_entries format=duration,size -of json runs/video/pick_place_demo.mp4
+```
+
+CLIの既定値はこのコマンドと同じである．
+幅・高さには偶数を指定し，幅320〜3840，高さ240〜2160を受け付ける．
+`--seeds`にはuint64のseedを空白区切りで1件以上指定する．
+
+### 実測結果と残作業
+
+**MP4生成（2026-10-31）**: 上記コマンド（seeds 0 / 1 / 7 / 25 / 42 / 99）を通常の`nix develop`（ffmpeg 9.0.1）で実行し，
+`runs/video/pick_place_demo.mp4`を生成した．ffprobe実測: 1280×720，30fps，1944フレーム，64.8秒，5,521,496バイト．
+全6 episode成功，落下0，最終XY誤差は下表と完全一致（平均2.546967 / P95 3.499503 / 最大3.814673mm）．
+ffmpegが必要な動画テスト（`tests/python/test_pick_place_video.py`）も実行し2 passed，pytest全体は144 passed．
+
+（以下はCodexサンドボックス内での事前検証の記録．サンドボックスではffmpegを導入できず，MP4生成は上記で別途実施した．）
+
+符号化を伴わない事前検証では，指定された30,000ステップ時点の`best.zip`を読み込み，以下の6 seedで全工程を実行した．
+Transportだけが`learned=True`であり，GraspとPlaceはIKである．
+
+| seed | Grasp / Transport / Placeの制御ステップ数 | 全工程成功 | 最終XY誤差（mm） |
+|---:|---|---|---:|
+| 0 | 135 / 15 / 76 | 成功 | 2.484339 |
+| 1 | 128 / 13 / 79 | 成功 | 2.022341 |
+| 7 | 144 / 13 / 76 | 成功 | 2.303908 |
+| 25 | 143 / 27 / 74 | 成功 | 3.814673 |
+| 42 | 142 / 21 / 78 | 成功 | 2.553994 |
+| 99 | 143 / 17 / 80 | 成功 | 2.102545 |
+
+全工程と各Skillはすべて6/6成功，落下は0件であった．
+最終XY誤差は平均2.546967 / P95 3.499503 / 最大3.814673mmである．
+結果は`runs/video/preflight.jsonl`と`preflight.summary.json`に保存した．
+制御ステップ数の合計1404に終了表示540フレームを加えると1944フレームとなり，30fpsでは64.8秒に相当する．
+これは実行したステップ数から算出した予定尺であり，動画ファイルの実測値ではない．
+
+seed 0を再実行し，Graspの135，学習Transportの15，Placeの76ステップ目に描画して，以下の1280×720 PNGを生成した．
+描画付きのエピソードの結果は描画なしの結果と完全一致し，3枚とも目視確認した．
+
+- `runs/video/pick_place_demo_grasp.png`
+- `runs/video/pick_place_demo_transport.png`
+- `runs/video/pick_place_demo_place.png`
+
+`cargo test --workspace`は45件成功，`maturin develop`，`cargo fmt --all --check`，および`cargo clippy --workspace --all-targets`も成功した．
+`pytest -q`は143 passed / 1 skipped / 警告9件であった．
+追加の描画テストでは，RGBサイズ，画像の非一様性，同一状態の再描画，seed変更による表示変化，元の状態・predicates・Skillレポートの不変，および全IK版の全工程結果との一致を確認した．
+ffmpeg / ffprobeが必要なCLIテストはスキップした．
+このテストは導入後に，動画のフレーム数と制御ステップ数＋終了表示の一致，30fps，解像度，PNG，および結果のJSONを検証する．
+
+今回，学習の開始，`runs/so101-transport/`への書き込み，コミット，およびpushは行っていない．

@@ -67,6 +67,13 @@ cargo run -p mujoco-runtime --example pick_place_probe   # ジョー形状・IK�
 # 既存Reach checkpoint の確認（2026-10-30: 100 episode・5mmで到達率98%）
 python examples/python/eval_reach.py --robot so101 \
   --model runs/so101-reach-5mm/base-policy/best.zip --episodes 100 --threshold 0.005
+
+# 動画: ffmpeg / ffprobeをdevShellへ追加済み（§7，docs/PICK_PLACE.md §10）
+python examples/python/record_pick_place.py \
+  --model runs/so101-transport/seed-42/best.zip --seeds 0 1 7 25 42 99 \
+  --width 1280 --height 720 --hold-frames 90 --output runs/video/pick_place_demo.mp4
+ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames \
+  -show_entries format=duration,size -of json runs/video/pick_place_demo.mp4
 ```
 
 Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv sync --locked --extra learning --no-install-project && maturin develop`。
@@ -109,7 +116,16 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - `runs/so101-transport/seed-42/best.zip`（30kステップ時点。学習は50kで停止）。
 - **Grasp(IK) → Transport(SAC学習済み) → Place(IK) を seeds 0〜199 で 200/200 成功、落下0、最終XY誤差 平均2.42 / P95 3.43 / 最大6.42 mm**。同seedの全IK版は 200/200、2.43 / 3.94 / 6.95 mm。詳細は docs/PICK_PLACE.md §9。
 
-未検証・未実装: 立方体yaw≠0，動画描画，Grasp/Placeの学習．
+動画描画の実装と事前検証（2026-10-31）:
+- `PickPlaceRenderer(sim, width, height).render()`はRGB bytesを返す．コンパイル済みモデルと全状態を描画用にコピーし，元の物理状態を変更しない．macOSはCGL（GPUが使えなければAppleのソフトウェア描画），他OSは非表示GLFWを使う．
+- `examples/python/record_pick_place.py`を追加した．各制御ステップを30fpsで出力し，seed，Skill，`LEARNED (SAC)` / `IK (scripted)`，XY誤差，終了結果を表示する．モデルの設定を復元し，JSON lines，集計JSON，3場面のPNGも保存する．
+- 指定モデルでseeds 0 / 1 / 7 / 25 / 42 / 99を再評価し，全工程・各Skillとも6/6成功，落下0，最終XY誤差は平均2.546967 / P95 3.499503 / 最大3.814673mmであった．Transportだけが学習済みである．
+- `runs/video/pick_place_demo_{grasp,transport,place}.png`を1280×720で生成し，目視確認した．seed 0を描画付きで再実行した結果は描画なしと完全一致した．
+- `cargo test --workspace`は45件成功，`maturin develop`，fmt，clippyも成功した．`pytest -q`は143 passed / 1 skipped / 警告9件であった．描画テストは成功し，動画テストはffmpeg / ffprobeがないためスキップした．
+- **MP4生成済み**: `runs/video/pick_place_demo.mp4`（ffprobe実測 1280×720・30fps・1944フレーム・64.8秒・5.5MB）．6/6成功．ffmpeg必須の動画テストも2 passed，pytest全体144 passed．
+- `runs/so101-transport/`への書き込み，学習，コミット，pushは行っていない．
+
+未検証・未実装: PDFレポート，立方体yaw≠0，Grasp/Placeの学習．
 
 ## 8. 次の作業（優先順）
 
@@ -120,7 +136,7 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
    - reset: 毎回 `ScriptedGrasp` を実行して把持状態を作る。報酬は goal のみの関数（HER再計算可）。固定horizon。
    - 目安 200–300k step。`best.zip` を随時保存し、時間切れでも途中モデルで評価できるようにする。
 3. **統合・評価完了**（§7）。以下は当初の計画: Grasp(IK) → Transport(学習) → Place(IK)．次は長期学習が終わったモデルを`eval_pick_place.py`で全IK版と同じseed列で評価し，全体成功率と誤差，Placeへの接続を確認する．学習中の出力先を変更・上書きしない．
-4. 動画（オフスクリーン描画→ffmpeg、学習済み区間を画面表示）とPDFレポート。
+4. **動画完了**（`runs/video/pick_place_demo.mp4`，64.8秒）．次は**PDFレポート**，public GitHubリポジトリ化（ユーザー確認後）．
 5. 余裕があれば Place / Grasp の学習、yawランダム化、質量・摩擦DR。
 
 ## 9. ハマりどころ（実測で判明済み）

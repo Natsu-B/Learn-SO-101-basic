@@ -6,6 +6,9 @@ from ._native import (
 from .config import TaskConfig
 
 def __getattr__(name):
+    if name == "GoalTransportEnv":
+        from .transport_env import GoalTransportEnv
+        return GoalTransportEnv
     if name == "GoalReachEnv":
         from .goal_env import GoalReachEnv
         return GoalReachEnv

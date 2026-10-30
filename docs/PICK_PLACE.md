@@ -306,3 +306,32 @@ smokeモデル版は5件すべてTransportの150ステップ上限で`reason="ti
 小さなSACモデルはテスト内で構築するだけで，学習を実行しない．
 学習版の観測と各行動後の物理状態が，同一seedと同一設定のGoalTransportEnvに完全一致することも確認した．
 警告9件は既存のGymnasium環境チェックによるものである．
+
+## 9. 学習Transportの本学習と全工程評価（2026-10-31）
+
+学習: `python examples/python/train_transport_sac_her.py --steps 250000 --seed 42 --output runs/so101-transport/seed-42`
+（セッション終了により 50,000 ステップで停止。`--resume` で再開可能）。
+学習中の評価（seed 1,000,000〜、20 episode、Transport単体、`transported` 判定）:
+
+| 学習ステップ | 成功率 | 落下率 | XY誤差平均 |
+|---:|---:|---:|---:|
+| 10,000 | 0.00 | 0.05 | 105.4 mm |
+| 20,000 | 0.65 | 0.05 | 23.8 mm |
+| 30,000 (best.zip) | 1.00 | 0.00 | 11.5 mm |
+| 40,000 | 0.95 | 0.00 | 12.9 mm |
+| 50,000 | 1.00 | 0.00 | 12.2 mm |
+
+全工程評価（seeds 0〜199、同一seed列で比較）:
+
+```
+python examples/python/eval_pick_place.py --model runs/so101-transport/seed-42/best.zip --episodes 200 --seed 0 --transport learned
+python examples/python/eval_pick_place.py --episodes 200 --seed 0 --transport scripted
+```
+
+| 構成 | 全体成功 | Grasp | Transport | Place | 落下 | 最終XY誤差 平均 / P95 / 最大 |
+|---|---:|---:|---:|---:|---:|---|
+| Grasp(IK) → **Transport(SAC, learned)** → Place(IK) | 200/200 | 200/200 | 200/200 | 200/200 | 0 | 2.42 / 3.43 / 6.42 mm |
+| 全IK版 | 200/200 | 200/200 | 200/200 | 200/200 | 0 | 2.43 / 3.94 / 6.95 mm |
+
+学習済みモデルは `runs/so101-transport/seed-42/best.zip`（30,000ステップ時点、gitには含めない）。
+出力: `runs/eval/learned-best-200.jsonl`, `runs/eval/scripted-200.jsonl`。

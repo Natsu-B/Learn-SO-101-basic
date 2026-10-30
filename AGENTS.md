@@ -105,17 +105,21 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - smokeモデル`runs/so101-transport/smoke-seed-42/best.zip`（2,000ステップ時点）をseeds 0〜4で評価し，全体0/5，Grasp 5/5，学習Transport 0/5，Place未実行，落下0件．全件150ステップでtimeout．最終XY誤差は平均144.282837mm / P95 180.767333mm / 最大188.652089mm．学習TransportからPlaceへの物理的な成功は未確認である．
 - `runs/so101-transport/seed-42/`の250kステップ背景学習は今回の作業対象外とし，操作していない．新しい学習実行は開始せず，変更はコミット・pushしていない．
 
-未検証・未実装: 立方体yaw≠0，動画描画，長期学習モデルの性能評価，学習Transportを含む3 Skillの物理的な成功，Grasp/Placeの学習．
+本学習と全工程評価（2026-10-31）:
+- `runs/so101-transport/seed-42/best.zip`（30kステップ時点。学習は50kで停止）。
+- **Grasp(IK) → Transport(SAC学習済み) → Place(IK) を seeds 0〜199 で 200/200 成功、落下0、最終XY誤差 平均2.42 / P95 3.43 / 最大6.42 mm**。同seedの全IK版は 200/200、2.43 / 3.94 / 6.95 mm。詳細は docs/PICK_PLACE.md §9。
+
+未検証・未実装: 立方体yaw≠0，動画描画，Grasp/Placeの学習．
 
 ## 8. 次の作業（優先順）
 
 1. **Python binding完了**（`crates/sim-python`）: `PickPlaceSimulator`。仕様と検証結果は上記§6を参照。
-2. **Transport を SAC+HER で長期学習**（環境・学習・評価基盤と短い動作確認は完了，性能は未達．ユーザー報告では250kステップの背景学習が実行中）
+2. **Transport を SAC+HER で学習 — 完了**（30kステップでTransport単体20/20、全工程200/200。§7参照）
    - obs: 5 arm関節q/qvel，挟持中心，立方体位置・速度，グリッパ角，立方体と挟持中心の相対位置（合計23次元）．achieved_goal=立方体位置，desired_goal=目標XY＋Rustのcriteriaから得るcube_half+carry_height．
    - action: 5 arm関節の正規化delta（既存 GoalReachEnv と同じ max_delta / rate limit）。グリッパは `GRIPPER_CLOSED` 固定。
    - reset: 毎回 `ScriptedGrasp` を実行して把持状態を作る。報酬は goal のみの関数（HER再計算可）。固定horizon。
    - 目安 200–300k step。`best.zip` を随時保存し、時間切れでも途中モデルで評価できるようにする。
-3. **統合実装とsmoke評価は完了**: Grasp(IK) → Transport(学習) → Place(IK)．次は長期学習が終わったモデルを`eval_pick_place.py`で全IK版と同じseed列で評価し，全体成功率と誤差，Placeへの接続を確認する．学習中の出力先を変更・上書きしない．
+3. **統合・評価完了**（§7）。以下は当初の計画: Grasp(IK) → Transport(学習) → Place(IK)．次は長期学習が終わったモデルを`eval_pick_place.py`で全IK版と同じseed列で評価し，全体成功率と誤差，Placeへの接続を確認する．学習中の出力先を変更・上書きしない．
 4. 動画（オフスクリーン描画→ffmpeg、学習済み区間を画面表示）とPDFレポート。
 5. 余裕があれば Place / Grasp の学習、yawランダム化、質量・摩擦DR。
 

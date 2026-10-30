@@ -361,3 +361,16 @@ python examples/python/eval_reach.py --robot so101 \
 python examples/python/eval_reach.py --robot so101 \
   --model runs/so101-reach-hold/best.zip --hold-seconds 0.5 --rerun
 ```
+
+## SO-101 Pick & Place（開発中）
+
+立方体・目標マーカー付きシーンと、Grasp → Transport → Place のSkill構成を追加しました。
+現状はIK＋状態機械（学習なし）で、接触物理による把持・運搬・配置を検証済みです。
+
+```bash
+nix develop
+cargo test -p mujoco-runtime --test pick_place
+cargo run --release -p mujoco-runtime --example so101_pick_place -- 200
+```
+
+照合結果・成功判定・計測値・学習計画は [docs/PICK_PLACE.md](docs/PICK_PLACE.md) を参照してください。

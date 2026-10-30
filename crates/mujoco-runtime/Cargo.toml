@@ -27,3 +27,7 @@ path = "../../examples/rust/panda_reach.rs"
 name = "ur5e_reach"
 path = "../../examples/rust/ur5e_reach.rs"
 
+[[example]]
+name = "pick_place_probe"
+path = "../../examples/rust/pick_place_probe.rs"
+

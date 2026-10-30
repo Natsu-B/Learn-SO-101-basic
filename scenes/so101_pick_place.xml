@@ -1,0 +1,34 @@
+<mujoco model="so101_pick_place_scene">
+  <include file="@MODEL_XML@"/>
+  <!-- Resolve the unchanged model's mesh files independently of the CWD. -->
+  <compiler meshdir="@MODEL_ASSETS@"/>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <global azimuth="150" elevation="-25" offwidth="1280" offheight="720"/>
+  </visual>
+  <asset>
+    <texture type="2d" name="table_tex" builtin="checker" rgb1="0.55 0.45 0.35" rgb2="0.5 0.4 0.3"
+      width="256" height="256"/>
+    <material name="table_mat" texture="table_tex" texrepeat="8 8" reflectance="0.05"/>
+  </asset>
+  <worldbody>
+    <light pos="0 -1 2" dir="0 0 -1"/>
+    <light pos="0.3 0.5 1.5" dir="-0.2 -0.3 -1" diffuse="0.3 0.3 0.3"/>
+    <!-- Table top: the robot base stands on it at z=0. -->
+    <geom name="table" type="plane" size="0.6 0.6 0.01" pos="0 0 0" material="table_mat"
+      friction="1 0.005 0.0001"/>
+    <!-- Dynamic 25 mm, 30 g cube on a free joint, moved only through contact physics. -->
+    <body name="cube" pos="0.2 0 0.0125">
+      <freejoint name="cube_joint"/>
+      <geom name="cube_geom" type="box" size="0.0125 0.0125 0.0125" mass="0.03"
+        friction="1.2 0.005 0.0001" condim="4" solref="0.01 1" rgba="0.85 0.15 0.15 1"/>
+      <site name="cube_center" size="0.002" rgba="1 1 1 0" group="4"/>
+    </body>
+    <!-- Goal marker: mocap body, visual only (no collision). -->
+    <body name="place_target" mocap="true" pos="0.2 0.12 0">
+      <geom name="place_target_marker" type="cylinder" size="0.022 0.0006" pos="0 0 0.0006"
+        contype="0" conaffinity="0" rgba="0.1 0.8 0.2 0.55"/>
+      <site name="place_target_site" size="0.002" rgba="0 1 0 0" group="4"/>
+    </body>
+  </worldbody>
+</mujoco>

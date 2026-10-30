@@ -1,4 +1,5 @@
 mod model_access;
+pub mod pick_place;
 pub mod presets;
 pub mod simulation;
 pub use robotics_core::{Error, JointCommand, JointState, Result, RobotSpec};

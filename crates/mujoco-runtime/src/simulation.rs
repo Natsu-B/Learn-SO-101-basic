@@ -21,9 +21,9 @@ pub struct ObservationSnapshot {
 }
 pub struct Simulator {
     // mjData must be destroyed before its corresponding model.
-    data: mj::mjData,
-    fk_data: std::cell::RefCell<mj::mjData>,
-    model: mj::mjModel,
+    pub(crate) data: mj::mjData,
+    pub(crate) fk_data: std::cell::RefCell<mj::mjData>,
+    pub(crate) model: mj::mjModel,
     joints: Vec<JointMapping>,
     spec: RobotSpec,
     sites: Vec<(String, ObjectId<obj::Site>)>,
@@ -56,6 +56,17 @@ impl Simulator {
     }
 
     pub fn from_spec(spec: RobotSpec) -> Result<Self> {
+        Self::from_spec_with_scene(spec, include_str!("../../../scenes/robot.xml"))
+    }
+
+    /// Load a robot into a caller-provided scene template. The template must
+    /// contain `@MODEL_XML@` and `@MODEL_ASSETS@` placeholders (see scenes/).
+    pub fn from_spec_with_scene(spec: RobotSpec, scene_template: &str) -> Result<Self> {
+        if !scene_template.contains("@MODEL_XML@") || !scene_template.contains("@MODEL_ASSETS@") {
+            return Err(Error::Model(
+                "scene template needs @MODEL_XML@ and @MODEL_ASSETS@".into(),
+            ));
+        }
         let version = mj::mj_versionString();
         if version != "3.10.0" {
             return Err(Error::Version(version));
@@ -96,7 +107,7 @@ impl Simulator {
             adapted.write_all(source.as_bytes())?;
             adapted.path().to_owned()
         };
-        let xml = include_str!("../../../scenes/robot.xml")
+        let xml = scene_template
             .replace("@MODEL_XML@", &xml_attribute(&include_path)?)
             .replace("@MODEL_ASSETS@", &xml_attribute(&directory.join("assets"))?);
         // mj_loadXML avoids rusty_mujoco 0.4.0's broken mjSpec Drop path.
@@ -574,6 +585,9 @@ impl Simulator {
     }
     pub fn actuator_ids(&self) -> Vec<usize> {
         self.joints.iter().map(|j| j.actuator.index()).collect()
+    }
+    pub(crate) fn joint_ids(&self) -> Vec<ObjectId<joint::Hinge>> {
+        self.joints.iter().map(|j| j.joint).collect()
     }
     pub fn home_position(&self) -> Vec<f64> {
         self.home_position.clone()

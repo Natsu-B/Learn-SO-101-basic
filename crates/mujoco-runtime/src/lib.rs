@@ -6,5 +6,6 @@ pub use robotics_core::{Error, JointCommand, JointState, Result, RobotSpec};
 pub use simulation::Simulator;
 
 pub mod randomization;
+pub mod skills;
 
 mod ik;

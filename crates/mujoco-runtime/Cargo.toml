@@ -31,3 +31,6 @@ path = "../../examples/rust/ur5e_reach.rs"
 name = "pick_place_probe"
 path = "../../examples/rust/pick_place_probe.rs"
 
+[[example]]
+name = "so101_pick_place"
+path = "../../examples/rust/so101_pick_place.rs"

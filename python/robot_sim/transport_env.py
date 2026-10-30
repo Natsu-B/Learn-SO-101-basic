@@ -14,6 +14,35 @@ from ._native import CONTROL_PERIOD, GRIPPER_CLOSED, PickPlaceSimulator
 logger = logging.getLogger(__name__)
 
 
+def transport_observation(state, carry_z):
+    """Build the policy input from a native snapshot (also used at inference)."""
+    q = np.asarray(state["qpos"], np.float32)
+    v = np.asarray(state["qvel"], np.float32)
+    center = np.asarray(state["grasp_center"], np.float32)
+    cube = np.asarray(state["cube_pos"], np.float32)
+    velocity = np.asarray(state["cube_vel"][:3], np.float32)
+    offset = (np.asarray(state["cube_pos"]) - state["grasp_center"]).astype(np.float32)
+    goal = np.asarray([*state["target"][:2], carry_z], np.float32)
+    return dict(observation=np.concatenate((q[:5], v[:5], center, cube,
+                                            velocity, q[5:6], offset)),
+                achieved_goal=cube, desired_goal=goal)
+
+
+def transport_command(state, action, previous_command, bounds, *, max_delta, rate_limit):
+    """Measured-q delta, command slew limit and native bounds; gripper stays closed."""
+    action = np.asarray(action)
+    if (action.shape != (5,) or action.dtype.kind not in "fiu"
+            or not np.isfinite(action).all() or np.any(np.abs(action) > 1)):
+        raise ValueError("expected finite normalized action (5,) in [-1,1]")
+    command = np.asarray(state["qpos"], np.float64).copy()
+    command[:5] += action * max_delta
+    command[:5] = np.clip(command[:5], previous_command[:5] - rate_limit,
+                         previous_command[:5] + rate_limit)
+    command = np.clip(command, bounds[:, 0], bounds[:, 1])
+    command[5] = GRIPPER_CLOSED
+    return command
+
+
 class GoalTransportEnv(gym.Env):
     metadata = {"render_modes": []}
 
@@ -52,17 +81,7 @@ class GoalTransportEnv(gym.Env):
         self._needs_reset = True
 
     def _observation(self):
-        s = self.last_result
-        q = np.asarray(s["qpos"], np.float32)
-        v = np.asarray(s["qvel"], np.float32)
-        center = np.asarray(s["grasp_center"], np.float32)
-        cube = np.asarray(s["cube_pos"], np.float32)
-        velocity = np.asarray(s["cube_vel"][:3], np.float32)
-        offset = (np.asarray(s["cube_pos"]) - s["grasp_center"]).astype(np.float32)
-        goal = np.asarray([*s["target"][:2], self.carry_z], np.float32)
-        return dict(observation=np.concatenate((q[:5], v[:5], center, cube,
-                                                velocity, q[5:6], offset)),
-                    achieved_goal=cube, desired_goal=goal)
+        return transport_observation(self.last_result, self.carry_z)
 
     def compute_reward(self, achieved_goal, desired_goal, info):
         distance = np.linalg.norm(np.asarray(achieved_goal, np.float64)
@@ -111,18 +130,9 @@ class GoalTransportEnv(gym.Env):
     def step(self, action):
         if self._needs_reset:
             raise gym.error.ResetNeeded("call reset() before step()")
-        action = np.asarray(action)
-        if (action.shape != self.action_space.shape or action.dtype.kind not in "fiu"
-                or not np.isfinite(action).all() or np.any(np.abs(action) > 1)):
-            raise ValueError(f"expected finite normalized action {self.action_space.shape} in [-1,1]")
-        # Match GoalReachEnv: delta around measured arm q, with command slew
-        # limited against the last command and then clipped to native bounds.
-        command = np.asarray(self.last_result["qpos"], np.float64).copy()
-        command[:5] += action * self.max_delta
-        command[:5] = np.clip(command[:5], self.previous_command[:5] - self.rate_limit,
-                             self.previous_command[:5] + self.rate_limit)
-        command = np.clip(command, self.bounds[:, 0], self.bounds[:, 1])
-        command[5] = GRIPPER_CLOSED
+        command = transport_command(self.last_result, action, self.previous_command,
+                                    self.bounds, max_delta=self.max_delta,
+                                    rate_limit=self.rate_limit)
         self.last_result = self.sim.step(command.tolist(), CONTROL_PERIOD)
         self.previous_command = command
         self.episode_step += 1

@@ -226,6 +226,19 @@ impl PickPlaceSimulator {
             Ok(status_name(&skill.status))
         })
     }
+    /// Inspect the active scripted skill without restarting it or advancing physics.
+    fn skill_report<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (report, status) = self.session(py, |s| {
+            let skill = s
+                .active
+                .as_ref()
+                .ok_or_else(|| Error::Input("start_skill first".into()))?;
+            Ok((skill.report(), status_name(&skill.status)))
+        })?;
+        let dict = skill_dict(py, report)?;
+        dict.set_item("status", status)?;
+        Ok(dict)
+    }
     #[pyo3(signature = (name, max_steps=None))]
     fn run_skill<'py>(
         &self,

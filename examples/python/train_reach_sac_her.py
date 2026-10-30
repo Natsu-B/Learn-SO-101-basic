@@ -1,0 +1,45 @@
+"""Bounded goal-conditioned SAC/HER; resumes weights and replay from latest.zip."""
+import argparse,json
+from pathlib import Path
+from robot_sim.goal_learning import train_goal
+
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('--robot',choices=['so101','panda','ur5e'],default='so101')
+    p.add_argument('--output',type=Path,help='default: resume directory or runs/<robot>-reach-5mm')
+    p.add_argument('--steps',type=int,default=500000)
+    p.add_argument('--max-steps',type=int,default=5000000)
+    restart=p.add_mutually_exclusive_group()
+    restart.add_argument('--resume',type=Path)
+    restart.add_argument('--initialize-from',type=Path,help='fine-tune weights with a fresh replay buffer and step counter')
+    p.add_argument('--keep-replay-between-stages',action='store_true')
+    p.add_argument('--curriculum',action='store_true')
+    p.add_argument('--algorithm',choices=['ppo','sac','sac-her'],default='sac-her')
+    p.add_argument('--max-delta',type=float,default=.05)
+    p.add_argument('--target-threshold',type=float,default=.005)
+    p.add_argument('--hold-seconds',type=float,default=0.,help='validation requires continuous in-range samples for this duration')
+    p.add_argument('--validation-threshold',type=float,help='validation distance threshold; default matches training threshold')
+    p.add_argument('--success-bonus',type=float,default=0.,help='per-step goal-recomputable in-range reward bonus')
+    p.add_argument('--validation-success',type=float,default=.9)
+    p.add_argument('--seed',type=int,default=42)
+    p.add_argument('--horizon',type=int,default=100)
+    p.add_argument('--eval-interval',type=int,default=25000)
+    p.add_argument('--eval-episodes',type=int,default=64)
+    p.add_argument('--final-eval-episodes',type=int,default=500,help='held-out validation count for Stage D; use small values only for smoke runs')
+    p.add_argument('--buffer-size',type=int,default=1000000)
+    p.add_argument('--batch-size',type=int,default=256)
+    p.add_argument('--learning-rate',type=float,default=.001)
+    p.add_argument('--gamma',type=float,default=.98)
+    p.add_argument('--tau',type=float,default=.005)
+    p.add_argument('--train-freq',type=int,default=16)
+    p.add_argument('--gradient-steps',type=int,default=4)
+    p.add_argument('--learning-starts',type=int,default=1000)
+    p.add_argument('--net-arch',type=int,nargs='+',default=[256,256,256])
+    p.add_argument('--domain-randomization',default=None,help='use light only after nominal 5mm validation')
+    p.add_argument('--wandb',dest='wandb_enabled',action='store_true')
+    p.add_argument('--wandb-mode',choices=['offline','online','disabled'],default='offline')
+    a=p.parse_args();kw=vars(a);output=kw.pop('output') or (a.resume.parent if a.resume else Path('runs')/f'{a.robot}-reach-5mm')
+    print(json.dumps(train_goal(output,**kw),indent=2))
+
+if __name__=='__main__':main()

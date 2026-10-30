@@ -1,0 +1,23 @@
+[package]
+name = "sim-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[features]
+rerun = ["dep:telemetry-rerun"]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+trajectory-io = { path = "../trajectory-io" }
+serde_json = "1"
+pyo3 = "0.27"
+robotics-core.workspace = true
+mujoco-runtime.workspace = true
+
+telemetry-rerun = { path = "../telemetry-rerun", features = ["sdk"], optional = true }

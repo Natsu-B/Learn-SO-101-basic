@@ -1,0 +1,107 @@
+{
+  "stage": 2,
+  "history": [
+    {
+      "step": 25008,
+      "stage": "A",
+      "seconds": 31.660696874954738,
+      "evaluation_episodes": 64,
+      "success_rate": 0.375,
+      "median_distance": 0.04563670418635166,
+      "p95_distance": 0.0970111285395782
+    },
+    {
+      "step": 50016,
+      "stage": "A",
+      "seconds": 62.64771445799852,
+      "evaluation_episodes": 64,
+      "success_rate": 1.0,
+      "median_distance": 0.01704864502627036,
+      "p95_distance": 0.019633543991432013
+    },
+    {
+      "step": 75024,
+      "stage": "B",
+      "seconds": 94.53453583299415,
+      "evaluation_episodes": 64,
+      "success_rate": 0.921875,
+      "median_distance": 0.008809867027932876,
+      "p95_distance": 0.061781865246218606
+    },
+    {
+      "step": 100032,
+      "stage": "C",
+      "seconds": 124.97421600000234,
+      "evaluation_episodes": 64,
+      "success_rate": 0.546875,
+      "median_distance": 0.007377146246980645,
+      "p95_distance": 0.026633529793891494
+    },
+    {
+      "step": 125040,
+      "stage": "C",
+      "seconds": 154.2208651669789,
+      "evaluation_episodes": 64,
+      "success_rate": 0.5,
+      "median_distance": 0.007922425923908879,
+      "p95_distance": 0.019925566547795037
+    },
+    {
+      "step": 150048,
+      "stage": "C",
+      "seconds": 183.17341175000183,
+      "evaluation_episodes": 64,
+      "success_rate": 0.875,
+      "median_distance": 0.006902617435915142,
+      "p95_distance": 0.012666264410166557
+    },
+    {
+      "step": 175056,
+      "stage": "C",
+      "seconds": 212.24220774997957,
+      "evaluation_episodes": 64,
+      "success_rate": 0.84375,
+      "median_distance": 0.0066874039982552334,
+      "p95_distance": 0.011146465622690636
+    },
+    {
+      "step": 200000,
+      "stage": "C",
+      "seconds": 241.36595054197824,
+      "evaluation_episodes": 64,
+      "success_rate": 0.84375,
+      "median_distance": 0.006972671873118175,
+      "p95_distance": 0.012092925016383616
+    }
+  ],
+  "best_scores": {
+    "A": [
+      1.0,
+      -0.01704864502627036
+    ],
+    "B": [
+      0.921875,
+      -0.008809867027932876
+    ],
+    "C": [
+      0.875,
+      -0.006902617435915142
+    ]
+  },
+  "elapsed_seconds": 241.54304479196435,
+  "best_eval_episodes": {
+    "A": 64,
+    "B": 64,
+    "C": 64
+  },
+  "training_steps": 200000,
+  "target_rng_state": {
+    "bit_generator": "PCG64",
+    "state": {
+      "state": 236541765132954475832878999329702935287,
+      "inc": 332724090758049132448979897138935081983
+    },
+    "has_uint32": 0,
+    "uinteger": 0
+  }
+}

@@ -1,0 +1,23 @@
+# Engineering sensitivity-test prior, NOT measured SO-101 tolerances.
+# ±10% scales; sensor zero ±0.3 degree. See docs/SIM_TO_REAL.md.
+[joint_damping_scale]
+min = 0.9
+max = 1.1
+[frictionloss_scale]
+min = 0.9
+max = 1.1
+[actuator_gain_scale]
+min = 0.9
+max = 1.1
+[actuator_force_scale]
+min = 0.9
+max = 1.1
+[control_latency_seconds]
+min = 0.0
+max = 0.04
+[observation_latency_seconds]
+min = 0.0
+max = 0.02
+[sensor_zero_offset_rad]
+min = -0.005235987756
+max = 0.005235987756

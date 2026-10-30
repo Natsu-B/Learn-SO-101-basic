@@ -1,0 +1,16 @@
+[package]
+name = "telemetry-rerun"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+sdk = ["dep:rerun"]
+
+[dependencies]
+robotics-core.workspace = true
+rerun = { version = "=0.38.1", default-features = false, features = ["sdk"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

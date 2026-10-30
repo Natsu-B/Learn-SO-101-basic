@@ -1,0 +1,302 @@
+{
+  "robot": "so101",
+  "training_steps": 100096,
+  "episodes": 20,
+  "first_seed": 10000,
+  "random": {
+    "success_rate": 0.0,
+    "mean_episode_reward": -50.32295241926892,
+    "mean_final_distance": 0.2744158292992819,
+    "mean_episode_length": 200.0,
+    "outcomes": [
+      {
+        "seed": 10000,
+        "reward": -27.860383882858006,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.19601902160904705
+      },
+      {
+        "seed": 10001,
+        "reward": -48.016186188587774,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.27356315495226896
+      },
+      {
+        "seed": 10002,
+        "reward": -50.36379086597037,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.26185172747028085
+      },
+      {
+        "seed": 10003,
+        "reward": -64.64016484177554,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.37934684054405043
+      },
+      {
+        "seed": 10004,
+        "reward": -52.61077498269147,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.3188620305458076
+      },
+      {
+        "seed": 10005,
+        "reward": -34.114344591701645,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.042684257923786606
+      },
+      {
+        "seed": 10006,
+        "reward": -62.301384606636546,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.3208583016301154
+      },
+      {
+        "seed": 10007,
+        "reward": -43.02909091809022,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.21296964287985365
+      },
+      {
+        "seed": 10008,
+        "reward": -37.415270981871025,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.3065404914062282
+      },
+      {
+        "seed": 10009,
+        "reward": -74.61918381192382,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.40684313723862314
+      },
+      {
+        "seed": 10010,
+        "reward": -28.800998238536458,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.11038111089684367
+      },
+      {
+        "seed": 10011,
+        "reward": -50.27039583271532,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.22237997291782324
+      },
+      {
+        "seed": 10012,
+        "reward": -59.08368674186005,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.3482875192609057
+      },
+      {
+        "seed": 10013,
+        "reward": -61.20478033764831,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.4528495034914647
+      },
+      {
+        "seed": 10014,
+        "reward": -43.31948591224592,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.25215477700088557
+      },
+      {
+        "seed": 10015,
+        "reward": -52.521230748783516,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.2961776913317761
+      },
+      {
+        "seed": 10016,
+        "reward": -31.590866790382528,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.17080534430838323
+      },
+      {
+        "seed": 10017,
+        "reward": -67.87703440202185,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.3337329165252
+      },
+      {
+        "seed": 10018,
+        "reward": -70.78651130265838,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.3121870067706721
+      },
+      {
+        "seed": 10019,
+        "reward": -46.033482406419715,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.26982213728162163
+      }
+    ]
+  },
+  "trained": {
+    "success_rate": 0.0,
+    "mean_episode_reward": -27.21443701576998,
+    "mean_final_distance": 0.13100662263841215,
+    "mean_episode_length": 200.0,
+    "outcomes": [
+      {
+        "seed": 10000,
+        "reward": -25.240759104842365,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.14573299945146448
+      },
+      {
+        "seed": 10001,
+        "reward": -14.914895975612547,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.05916640123224582
+      },
+      {
+        "seed": 10002,
+        "reward": -39.68793341098983,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.1993311533290628
+      },
+      {
+        "seed": 10003,
+        "reward": -32.0612118035268,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.20345083898732622
+      },
+      {
+        "seed": 10004,
+        "reward": -36.301100848328886,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.23096059862625526
+      },
+      {
+        "seed": 10005,
+        "reward": -37.417111026085095,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.21292962430684487
+      },
+      {
+        "seed": 10006,
+        "reward": -16.420355762251916,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.048362163264363815
+      },
+      {
+        "seed": 10007,
+        "reward": -35.636201366419726,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.13066733706513498
+      },
+      {
+        "seed": 10008,
+        "reward": -22.65514743162832,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.0740102591750768
+      },
+      {
+        "seed": 10009,
+        "reward": -17.59150782628811,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.09760650295045077
+      },
+      {
+        "seed": 10010,
+        "reward": -30.215161410497355,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.08170810227277706
+      },
+      {
+        "seed": 10011,
+        "reward": -31.930245778209574,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.1749771312102925
+      },
+      {
+        "seed": 10012,
+        "reward": -35.278394344137574,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.23411551351215626
+      },
+      {
+        "seed": 10013,
+        "reward": -32.59951754365615,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.11682254348819315
+      },
+      {
+        "seed": 10014,
+        "reward": -30.02865635026629,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.14941448334400292
+      },
+      {
+        "seed": 10015,
+        "reward": -17.013767707270212,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.07166837036754674
+      },
+      {
+        "seed": 10016,
+        "reward": -29.95635806045834,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.13531982463665754
+      },
+      {
+        "seed": 10017,
+        "reward": -19.137598010576443,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.07884581971523608
+      },
+      {
+        "seed": 10018,
+        "reward": -16.638986486381807,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.08014067638182777
+      },
+      {
+        "seed": 10019,
+        "reward": -23.563830067972347,
+        "length": 200,
+        "success": false,
+        "final_distance": 0.09490210945132714
+      }
+    ]
+  }
+}

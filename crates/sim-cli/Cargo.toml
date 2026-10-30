@@ -1,0 +1,24 @@
+[package]
+name = "sim-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "robot-sim"
+path = "src/main.rs"
+
+[dependencies]
+trajectory-io = { path = "../trajectory-io" }
+serde_json = "1"
+robotics-core.workspace = true
+mujoco-runtime.workspace = true
+clap = { version = "4", features = ["derive"] }
+telemetry-rerun = { path = "../telemetry-rerun", features = ["sdk"], optional = true }
+rusty_mujoco = { workspace = true, optional = true }
+glfw = { version = "0.60", default-features = false, features = ["raw-window-handle-v0-6"], optional = true }
+
+[features]
+default = []
+rerun = ["dep:telemetry-rerun"]
+viewer = ["dep:glfw", "dep:rusty_mujoco"]

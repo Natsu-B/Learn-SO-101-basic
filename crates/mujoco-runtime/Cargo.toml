@@ -1,0 +1,29 @@
+[package]
+name = "mujoco-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+robotics-core.workspace = true
+rusty_mujoco.workspace = true
+tempfile = "3"
+roxmltree = "0.21"
+
+[build-dependencies]
+cc = "1"
+
+[[example]]
+name = "so101_reach"
+path = "../../examples/rust/so101_reach.rs"
+
+[[example]]
+name = "panda_reach"
+path = "../../examples/rust/panda_reach.rs"
+
+[[example]]
+name = "ur5e_reach"
+path = "../../examples/rust/ur5e_reach.rs"
+

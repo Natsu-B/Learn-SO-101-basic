@@ -1,0 +1,19 @@
+[package]
+name = "so101-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rusty_mujoco.workspace = true
+tempfile = "3"
+mujoco-runtime.workspace = true
+robotics-core.workspace = true
+
+[[example]]
+name = "headless"
+path = "../../examples/rust/headless.rs"
+
+[[example]]
+name = "sine"
+path = "../../examples/rust/sine.rs"

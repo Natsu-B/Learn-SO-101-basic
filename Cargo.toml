@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/trajectory-io", "crates/so101-core", "crates/so101-cli", "crates/sim-python", "crates/robotics-core", "crates/mujoco-runtime", "crates/sim-cli", "crates/telemetry-rerun"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+rusty_mujoco = "0.4"
+so101-core = { path = "crates/so101-core" }
+robotics-core = { path = "crates/robotics-core" }
+mujoco-runtime = { path = "crates/mujoco-runtime" }

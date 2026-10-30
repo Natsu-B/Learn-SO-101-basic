@@ -1,0 +1,16 @@
+[package]
+name = "so101-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+so101-core.workspace = true
+robotics-core.workspace = true
+mujoco-runtime.workspace = true
+rusty_mujoco = { workspace = true, optional = true }
+glfw = { version = "0.60", default-features = false, features = ["raw-window-handle-v0-6"], optional = true }
+
+[features]
+default = []
+viewer = ["dep:glfw", "dep:rusty_mujoco"]

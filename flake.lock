@@ -1,0 +1,61 @@
+{
+  "nodes": {
+    "menagerie": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790203598,
+        "narHash": "sha256-lQVB8qSprf8oMXUeL2es+T5FIvuvLxMLSMmTawxyJoQ=",
+        "owner": "google-deepmind",
+        "repo": "mujoco_menagerie",
+        "rev": "c96a32d28fb5da84da38c1da4d749e7a13212855",
+        "type": "github"
+      },
+      "original": {
+        "owner": "google-deepmind",
+        "repo": "mujoco_menagerie",
+        "type": "github"
+      }
+    },
+    "mujoco-pkgs": {
+      "locked": {
+        "lastModified": 1782169413,
+        "narHash": "sha256-OemhXzlWI9ZximP9Hbd8eXi9gmRmCGzoxp4DtVO1pbU=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "775bdd0467f3de2fb5017830d00fa1f573b2ecda",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "775bdd0467f3de2fb5017830d00fa1f573b2ecda",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1790390834,
+        "narHash": "sha256-StRyS/lFHtIw/UgJk+xo+HA66mtoWeDUbkJdvf2Byn4=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "d54020a6ac3211e9f4201631bdf67678818c0cdf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "menagerie": "menagerie",
+        "mujoco-pkgs": "mujoco-pkgs",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

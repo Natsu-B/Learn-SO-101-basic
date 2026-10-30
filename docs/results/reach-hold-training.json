@@ -1,0 +1,134 @@
+{
+  "training_steps": 100032,
+  "elapsed_seconds": 127.82520095800282,
+  "history": [
+    {
+      "step": 25008,
+      "stage": "D",
+      "seconds": 33.204634125002485,
+      "evaluation_episodes": 500,
+      "hold_seconds": 0.5,
+      "reach_success_rate": 0.958,
+      "success_rate": 0.872,
+      "median_distance": 0.0027606332011255686,
+      "p95_distance": 0.009532167212818188
+    },
+    {
+      "step": 50016,
+      "stage": "D",
+      "seconds": 66.02204787499795,
+      "evaluation_episodes": 500,
+      "hold_seconds": 0.5,
+      "reach_success_rate": 0.966,
+      "success_rate": 0.902,
+      "median_distance": 0.002176463339314612,
+      "p95_distance": 0.009921498626940597
+    },
+    {
+      "step": 75024,
+      "stage": "D",
+      "seconds": 96.48561908300326,
+      "evaluation_episodes": 500,
+      "hold_seconds": 0.5,
+      "reach_success_rate": 0.986,
+      "success_rate": 0.932,
+      "median_distance": 0.001999618599469712,
+      "p95_distance": 0.006712598044587896
+    },
+    {
+      "step": 100032,
+      "stage": "D",
+      "seconds": 127.7713863329991,
+      "evaluation_episodes": 500,
+      "hold_seconds": 0.5,
+      "reach_success_rate": 0.99,
+      "success_rate": 0.978,
+      "median_distance": 0.001886803665629044,
+      "p95_distance": 0.004322100735612213
+    }
+  ],
+  "best_scores": {
+    "D": [
+      0.978,
+      -0.001886803665629044
+    ]
+  },
+  "config": {
+    "robot": "so101",
+    "algorithm": "sac-her",
+    "seed": 73,
+    "max_delta": 0.05,
+    "distance_scale": 0.1,
+    "rate_limit": 0.1,
+    "control_frequency": 30.0,
+    "goal_environment": true,
+    "environment_version": "goal-reach-v1",
+    "model_version": "MuJoCo 3.10.0 / Menagerie c96a32d28fb5da84da38c1da4d749e7a13212855",
+    "domain_randomization": null,
+    "task_config": {
+      "success_threshold": 0.003,
+      "success_bonus": 0.2,
+      "max_episode_steps": 100,
+      "min_target_distance": 0.05,
+      "max_target_distance": 0.25,
+      "joint_margin": 0.05,
+      "max_target_attempts": 4096
+    },
+    "evaluation_hold_seconds": 0.5,
+    "validation_threshold_m": 0.005,
+    "curriculum": false,
+    "keep_replay_between_stages": false,
+    "observation_schema": {
+      "observation": "selected joint q, qvel, end effector XYZ (SI)",
+      "achieved_goal": "XYZ metres",
+      "desired_goal": "XYZ metres"
+    },
+    "action_schema": {
+      "mode": "normalized_joint_delta",
+      "controlled_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll"
+      ],
+      "maximum_delta_rad": 0.05,
+      "fixed_omitted_joints": "home",
+      "rate_limit_rad_per_step": 0.1
+    },
+    "training_seed": 73,
+    "stable_baselines3_version": "2.9.0",
+    "sac": {
+      "buffer_size": 300000,
+      "batch_size": 256,
+      "learning_rate": 0.0003,
+      "gamma": 0.98,
+      "tau": 0.005,
+      "train_freq": 16,
+      "gradient_steps": 4,
+      "learning_starts": 1000
+    },
+    "net_arch": [
+      128,
+      128
+    ],
+    "her": {
+      "n_sampled_goal": 4,
+      "goal_selection_strategy": "future"
+    },
+    "initialized_from": "runs/so101-reach-5mm/base-policy/best.zip",
+    "task": "reach",
+    "success_threshold_m": 0.003,
+    "control_period_s": 0.03333333333333333,
+    "physics_timestep_s": 0.005,
+    "action_mode": "normalized_joint_delta",
+    "training_algorithm": "SAC+HER",
+    "internal_units": {
+      "joint_position": "radian",
+      "joint_velocity": "radian/second",
+      "position": "metre",
+      "time": "second"
+    },
+    "pretrained_steps": 425136
+  }
+}

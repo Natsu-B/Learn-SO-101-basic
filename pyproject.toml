@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "robot-sim"
+version = "0.1.0"
+description = "Shared Rust MuJoCo robot runtime and Gymnasium environments"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+readme = "README.md"
+dependencies = ["gymnasium>=1.2,<2", "numpy>=2,<3", "rerun-sdk==0.38.1"]
+
+[project.optional-dependencies]
+learning = ["stable-baselines3>=2.7,<3", "wandb>=0.22,<1"]
+analysis = [
+    "matplotlib>=3.10,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[tool.maturin]
+manifest-path = "crates/sim-python/Cargo.toml"
+python-source = "python"
+module-name = "robot_sim._native"
+features = ["extension-module"]
+python-packages = ["robot_sim", "so101_mujoco"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]

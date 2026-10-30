@@ -28,7 +28,8 @@
   in {
     devShells.${system}.default = assert mujoco.version == "3.10.0"; pkgs.mkShell {
       packages = [ pkgs.rustc pkgs.cargo pkgs.rustfmt pkgs.clippy pkgs.clang pkgs.pkg-config
-        python pkgs.uv pkgs.maturin mujoco physics.glfw3 pkgs.ffmpeg ];
+        python pkgs.uv pkgs.maturin mujoco physics.glfw3 pkgs.ffmpeg pkgs.typst ];
+      TYPST_FONT_PATHS = "${pkgs.noto-fonts-cjk-sans}/share/fonts";
       MUJOCO_LIB = "${mujoco}/lib";
       SO101_MODEL_DIR = "${menagerie}/robotstudio_so101";
       MENAGERIE_DIR = "${menagerie}";

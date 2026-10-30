@@ -80,12 +80,18 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - `tests/pick_place.rs`: 静止ドリフト、seed再現性、IK精度、両ジョー接触で30mm以上持ち上げ、**グリッパを閉じなければ持ち上がらない対照**、テレポートなし。
 - **現時点でAI（学習済みモデル）は未使用。** 課題要件を満たすには次の作業が必須。
 
-未検証・未実装: 立方体yaw≠0、動画描画、Python binding、Skillの学習。
+追加実装（2026-10-30）:
+- `robot_sim._native.PickPlaceSimulator`（`robot_sim`からも公開）: 専用ワーカー所有、GIL解放、panic時のRuntimeError化と再利用拒否。
+- seed付きreset、状態・接触・Rustのpredicates/default Criteria取得、関節指令、IK Skillの一括・逐次実行、全episode実行。
+- APIの仕様と追加検証結果は [docs/PICK_PLACE.md](docs/PICK_PLACE.md) §6。
+- 追加検証: Rust 45件成功、pytest 122件成功（既存96件＋追加26件）、警告9件。fmt / clippy / maturin developも成功。
+- Python経由の全IK版: seeds 0〜4で5/5成功、各Skillも5/5、最終XY誤差 平均2.313098mm / 最大2.476371mm、すべて`learned=False`。
+
+未検証・未実装: 立方体yaw≠0、動画描画、Skillの学習。
 
 ## 8. 次の作業（優先順）
 
-1. **Python binding**（`crates/sim-python`）: `PickPlaceSimulator` を追加。既存 `Worker`/`Session` パターン（専用スレッド・GIL解放）に倣う。
-   reset(seed) / state dict / step(command) / predicates / scripted skill を1ステップずつ・まとめて実行できるAPI。
+1. **Python binding完了**（`crates/sim-python`）: `PickPlaceSimulator`。仕様と検証結果は上記§6を参照。
 2. **Transport を SAC+HER で学習**（最有力。構造が既存Reachと同じでHERが使える）
    - obs: 5 arm関節 q/qvel、挟持中心、立方体位置・速度、グリッパ角。achieved_goal=立方体位置、desired_goal=目標XY＋carry高さ（cube_half+0.08）。
    - action: 5 arm関節の正規化delta（既存 GoalReachEnv と同じ max_delta / rate limit）。グリッパは `GRIPPER_CLOSED` 固定。

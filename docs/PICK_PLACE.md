@@ -95,3 +95,73 @@ cargo run --release -p mujoco-runtime --example so101_pick_place -- 200   # seed
 - Place の学習（下降＋解放、報酬: XY誤差・静止・ジョー非接触）。
 - Grasp の学習（接触報酬・段階報酬、またはIKを基準にした residual policy）。
 - 立方体yawのランダム化（IKの閉じ方向拘束と `PickPlaceConfig::yaw_range` は実装済みだが yaw≠0 は未検証）、質量・摩擦DR。
+
+## 6. Python binding（2026-10-30追加）
+
+`PickPlaceSimulator`を`robot_sim._native`と`robot_sim`から公開した．
+既存の`Worker`をセッション型について汎用化し，シミュレータと実行中のSkillを専用スレッドで所有する．
+Pythonからの待機中は`py.detach`でGILを解放する．
+ワーカー内でpanicが発生すると`RuntimeError`を返し，以後の状態取得や操作を拒否する．
+
+| API | 内容 |
+|---|---|
+| `PickPlaceSimulator(model_dir=None, *, robot=None)` | 既定はSO-101．`model_dir`と`robot`は排他．環境変数による解決は既存`Simulator`と同じ．専用シーンの対象外のrobotは拒否 |
+| `reset(seed)` | 物理状態とSkill実行状態の初期化 |
+| `state()` | `time`, `qpos[6]`, `qvel[6]`, `gripper`, `cube_pos[3]`, `cube_quat[4]`, `cube_vel[6]`, `target[3]`, `grasp_center[3]`, `contacts`のコピー |
+| `step(position, period=CONTROL_PERIOD)` | 6関節の位置指令で実行し，状態を返す．範囲・周期の検証は`PickPlaceSim::step`に委譲．手動実行後は実行中のSkillを解除 |
+| `action_bounds()`, `joint_names()`, `timestep()` | Rustが保持する関節の許容範囲，順序，物理刻み |
+| `predicates()` | Rustの`lifted`, `transported`, `placed`, `dropped`を既定の`Criteria`で評価 |
+| `criteria()` | 既定の全`Criteria`フィールドに加え，シーンの`cube_half`と`ScriptedTransport`の`carry_height` |
+| `run_skill(name, max_steps=None)` | `grasp` / `transport` / `place`を現在の状態から実行．上限省略時はSkill既定値を使用．`name`, `status`, `success`, `steps`, `learned`, `reason`を返す |
+| `start_skill(name)`, `skill_step()` | 現在の状態から開始し，1制御ステップずつ実行．状態文字列は`running` / `success` / `failure`．終端後の呼び出しでは物理状態を進めない |
+| `run_episode(seed)` | Rustの全IKパイプラインを実行し，`EpisodeReport`の全フィールドを辞書で返す．各Skillの辞書には`status`も付加 |
+| `close()` | ワーカーの終了とjoin．複数回の呼び出しが可能 |
+
+`contacts`は`fixed_jaw`, `moving_jaw`, `table`, `other_robot`, `pinched`を含む．
+`grasp_center`はRustの挟持中心FK，`cube_quat`はMuJoCoのwxyz順，`cube_vel`はfreejointの並進3成分と回転3成分である．
+`criteria()["carry_height"]`は静止高さからの増分なので，運搬目標の高さは`cube_half + carry_height`で求める．
+`GRIPPER_OPEN`, `GRIPPER_CLOSED`, `CONTROL_PERIOD`も両モジュールから公開する．
+すべてIK版であり，返す`learned`は`False`である．
+
+```python
+from robot_sim import PickPlaceSimulator
+
+sim = PickPlaceSimulator()
+try:
+    sim.reset(0)
+    grasp = sim.run_skill("grasp")
+    assert grasp["success"] and sim.predicates()["lifted"]
+    state = sim.state()  # 学習Transportの初期状態
+finally:
+    sim.close()
+```
+
+### 追加検証の実行結果
+
+`cargo fmt --all --check`と`cargo clippy --workspace --all-targets`は終了コード0で完了した．
+`cargo test --workspace`は45件成功，失敗0件で，追加したpanic処理とGIL解放の2件を含む．
+`maturin develop`で拡張を再ビルド・インストールした後の`pytest -q`は`122 passed, 9 warnings in 19.04s`であった．
+追加したPythonテストは26件で，既存の96件もすべて成功した．
+警告9件は既存のGymnasium環境チェックによるaction/observation空間の警告である．
+
+すべて`nix develop`内で実行した．
+この実行環境では通常の起動でキャッシュへの書き込みとdaemonへの接続が拒否されたため，保存済み開発環境`/nix/store/99ig9yx67wkjrp8x8s12wa61da1p4ayw-nix-shell-env`を読み取り専用ストアで起動した．
+使用した起動オプションは`--offline --extra-experimental-features read-only-local-store --store 'local?read-only=true'`で，起動用PATHにはNixのBash 5を使用した．
+`maturin develop`は最初にPyPIへの接続で失敗したが，`UV_OFFLINE=true`で再実行して成功した．
+
+物理動作はPython bindingの`run_episode(seed)`をseeds 0〜4で実行し，各episodeの`success`とRustの`placed`判定をテストした．
+別途，同じ5 seedで取得したレポートの最終XY誤差は以下のとおりである．
+
+| seed | Grasp / Transport / Placeの制御ステップ数 | 最終XY誤差（mm） |
+|---|---|---|
+| 0 | 135 / 33 / 80 | 2.437146 |
+| 1 | 128 / 30 / 80 | 2.181044 |
+| 2 | 140 / 41 / 80 | 2.307495 |
+| 3 | 140 / 24 / 81 | 2.163435 |
+| 4 | 143 / 25 / 80 | 2.476371 |
+
+全体成功は5/5，各Skillも5/5で，最終XY誤差は平均2.313098mm，最大2.476371mmであった．
+すべて`learned=False`である．
+seed 11の`run_skill("grasp")`では`lifted=True`，両ジョー接触，テーブル非接触を確認した．
+seed 25では3 Skillすべてについて，逐次実行と一括実行の終端状態・判定が完全一致し，`run_episode`の状態と各Skillのレポートも一致した．
+不正な関節指令・周期による状態不変，上限の直外を拒否し端点を受理すること，Skillの0/1/3ステップ上限での失敗報告も確認した．

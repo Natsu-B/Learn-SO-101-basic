@@ -1,0 +1,108 @@
+# AGENTS.md — SO-101 Pick & Place（Physical AI講座 最終課題）
+
+このファイルは作業方針と引継ぎ情報。作業開始時に必ず読み、状況が変わったら更新してコミットする。
+詳細な計測値・経緯は [docs/PICK_PLACE.md](docs/PICK_PLACE.md)。
+
+## 1. ゴールと締切
+
+- MuJoCo上のSO-101で、**立方体の初期位置と目標位置が変化しても** Pick & Place を成功させる。
+- **締切: 2026-11-02 10:00**。提出物は 動作動画1〜3分 / public GitHubリポジトリ / PDFレポート。
+- **AI利用が必須**: 少なくとも一部の動作で学習済みモデルの推論を実際に使う。IK＋固定状態機械だけではAI利用とみなされない。
+- 間に合わない場合は機能を縮小してでも「実際に動く成果物」を優先する。
+- 実機なし・シミュレーションのみ。物体/目標位置はMuJoCoの真値を使ってよい（画像認識は対象外）。
+- 対象外: 未知の障害物・未知形状・照明変化。
+
+## 2. 制御アーキテクチャ
+
+Grasp → Transport → Place の3 Skill。成功判定に基づいて順に遷移し、前Skillの終了状態が次Skillの初期状態になる。
+
+- `crates/mujoco-runtime/src/skills.rs`: `Skill` trait、成功判定 `predicates`（lifted / transported / placed / dropped）、
+  IK版 `ScriptedGrasp/Transport/Place`、`run_episode`、`EpisodeReport`。
+- **成功判定はRust側の `predicates` を唯一の定義とし、学習環境・評価・デモで共用する。** Python側で別定義を作らない。
+- 学習済みSkillとIK版Skillは `Skill::learned()` / `SkillReport.learned` で必ず区別して記録・表示する。
+- Skill間の状態分布の不一致に注意: 学習時の初期状態は実行時と同じ前段Skillの終了状態から作る（＋小ノイズ）。
+
+## 3. 技術上の制約・方針
+
+- ロボット制御・シミュレータ内部処理・タスク管理は原則Rust。RLはPythonのStable-Baselines3（既存SAC+HER基盤 `python/robot_sim/goal_learning.py`）。
+- 既存の関節範囲・アクチュエータ制限（`Simulator::action_bounds`）・制御周期（30 Hz、physics 0.005 s）を守る。
+- 立方体はMuJoCoの接触物理だけで動かす。座標を書き込むのはreset時の `PickPlaceSim::set_cube` のみ。
+- **既存のReachタスク・テストを壊さない。** `scenes/robot.xml` と `Simulator::from_spec` の挙動は変えない（Pick & Placeは `from_spec_with_scene` + `scenes/so101_pick_place.xml`）。
+- 変更は小さく分離し、原因を特定しやすくする。
+- 既存実装は必要なら再利用する。CodexなどのAgentも積極的に使ってよい。
+- 予備マシン: NixOS / Core Ultra 9 / 32GB を一時利用可（長い学習向け）。外部GPUはなし。
+
+## 4. 検証と報告のルール
+
+- **コンパイル成功と物理的な成功（把持・運搬・配置）は別の検証として扱う。**
+- **実行していないテスト・学習・評価の結果を成功として報告しない。** 数値は実行したコマンドの出力からのみ書く。
+- 最低限記録するもの: 成功/失敗条件、試行回数、seed、最終位置誤差、Skillごとの成功率、どのSkillが学習済みか。
+- 変更後は関連するRust/Pythonテストを実行して結果を報告する（下のコマンド）。
+
+## 5. コミット方針
+
+- **Conventional Commits** で区切りごとにどんどんコミットしてよい（ユーザー了承済み）。例: `feat(mujoco-runtime): ...`, `test(...)`, `docs: ...`, `fix(...)`, `refactor(...)`。
+- 1コミット1目的、各コミット単独でビルドが通る状態を保つ。
+- 末尾に `Co-Authored-By:` 行を付ける（使用モデルのもの）。
+- push・リモート作成・publicリポジトリ化はユーザーに確認してから行う。
+- `runs/`、`data/`、`.venv*`、`*.so` はコミットしない（`.gitignore` 済み）。
+
+## 6. 環境とコマンド
+
+Mac mini M1（aarch64-darwin）。すべて `nix develop` 内で実行する。
+
+```bash
+nix develop                     # .venv があれば自動activate
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo test --workspace          # 2026-10-30 時点: 全件成功（既存44件 + pick_place 6件）
+maturin develop                 # Pythonテスト前に native extension を再ビルド
+pytest -q                       # 2026-10-30 時点: 96 passed
+
+# Pick & Place（IK版）評価: 引数 = エピソード数, 先頭seed。JSON lines を stdout、要約を stderr
+cargo run --release -p mujoco-runtime --example so101_pick_place -- 200 0
+PICK_TRACE=1 cargo run --release -p mujoco-runtime --example so101_pick_place -- 1 25   # ステップ追跡
+cargo run -p mujoco-runtime --example pick_place_probe   # ジョー形状・IKの計測
+
+# 既存Reach checkpoint の確認（2026-10-30: 100 episode・5mmで到達率98%）
+python examples/python/eval_reach.py --robot so101 \
+  --model runs/so101-reach-5mm/base-policy/best.zip --episodes 100 --threshold 0.005
+```
+
+Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv sync --locked --extra learning --no-install-project && maturin develop`。
+
+## 7. 現状（2026-10-30 終了時点、HEAD: `docs: record pick-and-place ...`）
+
+完了:
+- シーン `scenes/so101_pick_place.xml`: テーブル(z=0)、25mm・30g立方体（freejoint、condim 4、摩擦1.2）、目標マーカー（mocap・非接触）。
+- `pick_place.rs` の `PickPlaceSim`: seed付き配置（半径0.15–0.25m、方位±0.8rad、相互距離≥0.08m、yaw=0）、接触判定、挟持中心FK、DLS IK（位置＋指先方向＋閉じ方向）。
+- IK版 Grasp/Transport/Place: **200/200 seed成功、最終XY誤差 平均2.4mm / P95 4.1mm / 最大6.9mm**。
+- `tests/pick_place.rs`: 静止ドリフト、seed再現性、IK精度、両ジョー接触で30mm以上持ち上げ、**グリッパを閉じなければ持ち上がらない対照**、テレポートなし。
+- **現時点でAI（学習済みモデル）は未使用。** 課題要件を満たすには次の作業が必須。
+
+未検証・未実装: 立方体yaw≠0、動画描画、Python binding、Skillの学習。
+
+## 8. 次の作業（優先順）
+
+1. **Python binding**（`crates/sim-python`）: `PickPlaceSimulator` を追加。既存 `Worker`/`Session` パターン（専用スレッド・GIL解放）に倣う。
+   reset(seed) / state dict / step(command) / predicates / scripted skill を1ステップずつ・まとめて実行できるAPI。
+2. **Transport を SAC+HER で学習**（最有力。構造が既存Reachと同じでHERが使える）
+   - obs: 5 arm関節 q/qvel、挟持中心、立方体位置・速度、グリッパ角。achieved_goal=立方体位置、desired_goal=目標XY＋carry高さ（cube_half+0.08）。
+   - action: 5 arm関節の正規化delta（既存 GoalReachEnv と同じ max_delta / rate limit）。グリッパは `GRIPPER_CLOSED` 固定。
+   - reset: 毎回 `ScriptedGrasp` を実行して把持状態を作る。報酬は goal のみの関数（HER再計算可）。固定horizon。
+   - 目安 200–300k step。`best.zip` を随時保存し、時間切れでも途中モデルで評価できるようにする。
+3. 統合: Grasp(IK) → Transport(学習) → Place(IK)。IK版と同じseedで成功率・誤差を比較し、`learned` で区別。
+4. 動画（オフスクリーン描画→ffmpeg、学習済み区間を画面表示）とPDFレポート。
+5. 余裕があれば Place / Grasp の学習、yawランダム化、質量・摩擦DR。
+
+## 9. ハマりどころ（実測で判明済み）
+
+- `gripperframe` は挟持中心ではない。site の **+x が指先方向、+z が固定ジョー→可動ジョー方向**。
+  25mm立方体の中心は site 座標で約 (−6, 0.2, −8) mm（`PickPlaceSim::grasp_offset`）。
+- グリッパ角: 0 rad で指先間隔16mm、0.3 radで40mm。開=`0.6`、閉=`-0.17`（力制限で押し付け、25mm立方体では約0.10 radで停止）。
+- IKの姿勢誤差に外積を使うと指先「真上」の解に収束する → 方向ベクトルの差を使う（修正済み）。
+- 固定ジョー内面と立方体側面のすき間は約1mm。下降時は固定ジョーを −z 方向（立方体から離れる向き）へ4mmずらす。符号を逆にすると成功率が半減した。
+- 運搬中の立方体は1制御ステップで最大約12mm動く（テレポート判定は30mm）。
+- ログインシェルは **zsh**: `$VAR` に入れた複数パスは単語分割されない。複数ファイルを扱うスクリプトは配列か `bash` を使う。
+- `.venv` はリポジトリ移動前のパスを参照して壊れていたため再作成済み（旧環境は `.venv-old-moved-path/`）。
+- 既存checkpointは `runs/so101-reach-5mm/base-policy/best.zip`、`runs/so101-reach-hold/best.zip`（gitには含めない）。

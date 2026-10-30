@@ -387,6 +387,7 @@ impl PySineTrajectory {
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Simulator>()?;
     module.add_class::<pick_place::PickPlaceSimulator>()?;
+    module.add_class::<pick_place::PickPlaceRenderer>()?;
     module.add("GRIPPER_OPEN", mujoco_runtime::skills::GRIPPER_OPEN)?;
     module.add("GRIPPER_CLOSED", mujoco_runtime::skills::GRIPPER_CLOSED)?;
     module.add("CONTROL_PERIOD", mujoco_runtime::skills::CONTROL_PERIOD)?;

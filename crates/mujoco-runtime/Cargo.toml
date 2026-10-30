@@ -12,6 +12,12 @@ rusty_mujoco.workspace = true
 tempfile = "3"
 roxmltree = "0.21"
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+glfw = { version = "0.60", default-features = false, features = ["raw-window-handle-v0-6"], optional = true }
+
+[features]
+render = ["dep:glfw"]
+
 [build-dependencies]
 cc = "1"
 

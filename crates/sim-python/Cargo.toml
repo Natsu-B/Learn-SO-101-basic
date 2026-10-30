@@ -18,6 +18,6 @@ trajectory-io = { path = "../trajectory-io" }
 serde_json = "1"
 pyo3 = "0.27"
 robotics-core.workspace = true
-mujoco-runtime.workspace = true
+mujoco-runtime = { workspace = true, features = ["render"] }
 
 telemetry-rerun = { path = "../telemetry-rerun", features = ["sdk"], optional = true }

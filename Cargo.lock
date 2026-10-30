@@ -1966,6 +1966,7 @@ name = "mujoco-runtime"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "glfw",
  "robotics-core",
  "roxmltree",
  "rusty_mujoco",

@@ -1,5 +1,15 @@
 use rusty_mujoco::{self as mj, ObjectId, obj};
 
+#[cfg(feature = "render")]
+pub(crate) fn render_quality(model: &mut mj::mjModel) {
+    unsafe extern "C" {
+        fn robot_sim_render_quality(model: *mut mj::bindgen::mjModel);
+    }
+    // SAFETY: exclusive access to the renderer's owned model. Only visual
+    // quality fields are written; no allocation/topology/physics is changed.
+    unsafe { robot_sim_render_quality(&mut **model) };
+}
+
 unsafe extern "C" {
     fn robot_sim_actuator_joint(model: *const mj::bindgen::mjModel, actuator: i32) -> i32;
 }

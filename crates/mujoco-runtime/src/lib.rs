@@ -9,3 +9,6 @@ pub mod randomization;
 pub mod skills;
 
 mod ik;
+
+#[cfg(feature = "render")]
+pub mod render;

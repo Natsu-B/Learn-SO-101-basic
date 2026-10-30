@@ -1,5 +1,11 @@
 #include <mujoco/mujoco.h>
 
+/* Only called on an owned rendering copy, never on a physics model. */
+void robot_sim_render_quality(mjModel* model) {
+  model->vis.quality.shadowsize = 1024;
+  model->vis.quality.offsamples = 0;
+}
+
 /* rusty_mujoco 0.4.0's actuator_trnid getter compares a joint index to an
  * object-kind enum. Read the transmission using the pinned official headers. */
 int robot_sim_actuator_joint(const mjModel* model, int actuator) {

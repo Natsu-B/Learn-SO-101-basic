@@ -10,7 +10,11 @@ use mujoco_runtime::{
         ScriptedTransport, Skill, SkillReport, SkillStatus, predicates,
     },
 };
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+use pyo3::{
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyBytes, PyDict},
+};
 use robotics_core::Result;
 use std::{collections::HashMap, path::PathBuf};
 
@@ -268,6 +272,46 @@ impl PickPlaceSimulator {
             )
         })?;
         episode_dict(py, report)
+    }
+}
+
+/// Main-thread visualization of a private compiled-model/data copy.
+#[pyclass(module = "robot_sim._native", unsendable)]
+pub(crate) struct PickPlaceRenderer {
+    renderer: Option<mujoco_runtime::render::OffscreenRenderer>,
+    source: Py<PickPlaceSimulator>,
+}
+#[pymethods]
+impl PickPlaceRenderer {
+    #[new]
+    #[pyo3(signature = (sim, width=1280, height=720))]
+    fn new(py: Python<'_>, sim: Py<PickPlaceSimulator>, width: u32, height: u32) -> PyResult<Self> {
+        let model = sim.borrow(py).session(py, |s| {
+            Ok(mujoco_runtime::render::model_snapshot(&s.sim.sim))
+        })?;
+        let renderer =
+            boundary(|| mujoco_runtime::render::OffscreenRenderer::new(&model, width, height))?;
+        Ok(Self {
+            renderer: Some(renderer),
+            source: sim,
+        })
+    }
+
+    /// Return width * height * 3 RGB bytes; source physics is read-only.
+    fn render<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("renderer is closed"))?;
+        let state = self.source.borrow(py).session(py, |s| {
+            Ok(mujoco_runtime::render::state_snapshot(&s.sim.sim))
+        })?;
+        let bytes = boundary(|| renderer.render(&state))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    fn close(&mut self) {
+        self.renderer = None;
     }
 }
 impl PickPlaceSimulator {

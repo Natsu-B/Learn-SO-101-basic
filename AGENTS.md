@@ -71,14 +71,14 @@ python examples/python/eval_reach.py --robot so101 \
 
 Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv sync --locked --extra learning --no-install-project && maturin develop`。
 
-## 7. 現状（2026-10-30 終了時点、HEAD: `docs: record pick-and-place ...`）
+## 7. 現状（2026-10-30，未コミットのTransport追加を含む）
 
 完了:
 - シーン `scenes/so101_pick_place.xml`: テーブル(z=0)、25mm・30g立方体（freejoint、condim 4、摩擦1.2）、目標マーカー（mocap・非接触）。
 - `pick_place.rs` の `PickPlaceSim`: seed付き配置（半径0.15–0.25m、方位±0.8rad、相互距離≥0.08m、yaw=0）、接触判定、挟持中心FK、DLS IK（位置＋指先方向＋閉じ方向）。
 - IK版 Grasp/Transport/Place: **200/200 seed成功、最終XY誤差 平均2.4mm / P95 4.1mm / 最大6.9mm**。
 - `tests/pick_place.rs`: 静止ドリフト、seed再現性、IK精度、両ジョー接触で30mm以上持ち上げ、**グリッパを閉じなければ持ち上がらない対照**、テレポートなし。
-- **現時点でAI（学習済みモデル）は未使用。** 課題要件を満たすには次の作業が必須。
+- この全IK版では学習済みモデルを使わない．学習Transportの追加結果は下記を参照．
 
 追加実装（2026-10-30）:
 - `robot_sim._native.PickPlaceSimulator`（`robot_sim`からも公開）: 専用ワーカー所有、GIL解放、panic時のRuntimeError化と再利用拒否。
@@ -87,13 +87,21 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 追加検証: Rust 45件成功、pytest 122件成功（既存96件＋追加26件）、警告9件。fmt / clippy / maturin developも成功。
 - Python経由の全IK版: seeds 0〜4で5/5成功、各Skillも5/5、最終XY誤差 平均2.313098mm / 最大2.476371mm、すべて`learned=False`。
 
-未検証・未実装: 立方体yaw≠0、動画描画、Skillの学習。
+追加実装（2026-10-30，Transport）:
+- `GoalTransportEnv`とSAC+HERの学習・評価スクリプトを追加．実際のGrasp終端から開始し，成功・落下はRustの判定を使う．訓練は150ステップ固定．
+- Rust 45件成功，`maturin develop`成功，pytest 136件成功（警告9件）．
+- seed 42で3,008ステップの短い学習を実行し，最適化504回，`best.zip`と`final.zip`の保存を確認．学習165.64ステップ/秒（評価除外），環境206.82ステップ/秒（把持reset込み）．
+- finalモデルをseeds 2,000,000〜2,000,009で評価し，Grasp 10/10，学習Transport 0/10，落下0/10．最終XY誤差は平均142.920mm / P95 207.880mm / 最大219.714mm．運搬性能の達成は未確認．
+- 別出力先への`--resume`で3,008→3,168ステップ，追加の最適化40回を確認．実行コマンドと仕様は[docs/PICK_PLACE.md](docs/PICK_PLACE.md) §7を参照．
+- 今回の指示に従い，変更はコミット・pushしていない．
+
+未検証・未実装: 立方体yaw≠0，動画描画，Transportの長期学習と3 Skillの統合，Grasp/Placeの学習．
 
 ## 8. 次の作業（優先順）
 
 1. **Python binding完了**（`crates/sim-python`）: `PickPlaceSimulator`。仕様と検証結果は上記§6を参照。
-2. **Transport を SAC+HER で学習**（最有力。構造が既存Reachと同じでHERが使える）
-   - obs: 5 arm関節 q/qvel、挟持中心、立方体位置・速度、グリッパ角。achieved_goal=立方体位置、desired_goal=目標XY＋carry高さ（cube_half+0.08）。
+2. **Transport を SAC+HER で長期学習**（環境・学習・評価基盤と短い動作確認は完了，性能は未達）
+   - obs: 5 arm関節q/qvel，挟持中心，立方体位置・速度，グリッパ角，立方体と挟持中心の相対位置（合計23次元）．achieved_goal=立方体位置，desired_goal=目標XY＋Rustのcriteriaから得るcube_half+carry_height．
    - action: 5 arm関節の正規化delta（既存 GoalReachEnv と同じ max_delta / rate limit）。グリッパは `GRIPPER_CLOSED` 固定。
    - reset: 毎回 `ScriptedGrasp` を実行して把持状態を作る。報酬は goal のみの関数（HER再計算可）。固定horizon。
    - 目安 200–300k step。`best.zip` を随時保存し、時間切れでも途中モデルで評価できるようにする。

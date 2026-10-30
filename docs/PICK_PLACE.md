@@ -165,3 +165,76 @@ finally:
 seed 11の`run_skill("grasp")`では`lifted=True`，両ジョー接触，テーブル非接触を確認した．
 seed 25では3 Skillすべてについて，逐次実行と一括実行の終端状態・判定が完全一致し，`run_episode`の状態と各Skillのレポートも一致した．
 不正な関節指令・周期による状態不変，上限の直外を拒否し端点を受理すること，Skillの0/1/3ステップ上限での失敗報告も確認した．
+
+## 7. 学習Transportの基盤と短い学習の検証（2026-10-30）
+
+`python/robot_sim/transport_env.py`に`GoalTransportEnv`を追加した．
+`reset(seed)`でRustの`reset`と`run_skill("grasp")`を実行し，実際の把持終端を初期状態にする．
+把持失敗時はseedを1ずつ増やして最大3回再試行し，失敗理由をログに残す．
+要求seed，採用seed，再試行回数を`info`に含め，環境全体の試行・失敗回数も保持する．
+初期状態への追加ノイズは実装していない．
+
+観測の`observation`はfloat32の23次元である．
+内訳は腕5関節の位置・速度（各5），挟持中心（3），立方体位置（3），立方体並進速度（3），グリッパ角（1），立方体と挟持中心の相対位置（3）である．
+`achieved_goal`は立方体位置，`desired_goal`は目標XYと`criteria()["cube_half"] + criteria()["carry_height"]`の高さである．
+報酬は`-norm(achieved_goal - desired_goal) / 0.1`とし，接触状態や成功フラグを参照せず，バッチ入力とHERによる目標の置換に対応する．
+距離のスケールは設定可能である．
+物理的な成功・落下は`sim.predicates()`だけで判定するため，3次元の目標距離とRustの運搬成功条件は区別される．
+
+行動は腕5関節の正規化deltaであり，既存`GoalReachEnv`と同じく実測関節角に`action * max_delta`を加え，前回指令からの変化量とRustの関節範囲で制限する．
+既定値は`max_delta=0.05`，`rate_limit=0.1` radで，グリッパ指令は常にRustの`GRIPPER_CLOSED`とする．
+1行動はRustの`CONTROL_PERIOD`に対応する．
+訓練は成功・落下後も150ステップまで継続し，`truncated=True`で終了する．
+評価では`terminate_on_success`と`terminate_on_drop`を有効にできる．
+
+`python/robot_sim/transport_learning.py`の学習処理は既存Reachを変更せず，SACの設定とHERの`future`方式を踏襲する．
+定期評価ではRustの成功率，次に平均XY誤差でモデルを比較して`best.zip`を保存する．
+`latest.zip`，`final.zip`，リプレイバッファ，環境設定，乱数状態も保存する．
+`--resume`は対応する`latest.zip`または`final.zip`と同じディレクトリの設定・バッファを読み込み，新しい把持状態から追加学習する．
+再開時は保存途中の軌跡を打ち切るため，SB3の警告が出る．
+評価のJSON linesはエピソードごとのseed，誤差，落下，Skillごとの`learned`を含み，最後に集計を出力する．
+この評価はGraspとTransportまでであり，Placeは実行しない．
+
+### 実行結果
+
+すべて§6と同じ保存済み`nix develop`環境で実行した．
+`cargo test --workspace`は45件成功し，`UV_OFFLINE=true maturin develop`も成功した．
+今回はuvのキャッシュへの書き込みが拒否されたため，`UV_CACHE_DIR=/private/tmp/so101-transport-uv`も指定した．
+追加した14件のPythonテストは，観測，seed再現性，報酬のバッチ計算，HERによる目標の置換，指令制限，再試行，終了条件，リプレイからの最適化，保存モデルの評価CLIを検証する．
+評価CLIの修正後に再実行した`pytest -q`は`136 passed, 9 warnings in 37.01s`であり，警告9件は既存環境の空間に関するものである．
+
+短い学習と評価に使ったコマンドは以下のとおりである．
+
+```bash
+python examples/python/train_transport_sac_her.py \
+  --output runs/so101-transport/smoke-seed-42 --steps 3000 --seed 42 \
+  --eval-interval 1000 --eval-episodes 3 --buffer-size 10000
+python examples/python/eval_transport.py \
+  --model runs/so101-transport/smoke-seed-42/final.zip \
+  --episodes 10 --seed 2000000
+python examples/python/train_transport_sac_her.py \
+  --resume runs/so101-transport/smoke-seed-42/final.zip \
+  --output runs/so101-transport/smoke-resume-seed-42 \
+  --steps 160 --eval-interval 160 --eval-episodes 1
+```
+
+| 項目 | 実測結果 |
+|---|---|
+| 学習seed / ステップ / 最適化更新 | 42 / 3,008 / 504回 |
+| 学習時間 / うち評価・定期保存 | 25.870秒 / 7.710秒 |
+| 学習速度（評価・定期保存を除く） | 165.642ステップ/秒 |
+| 環境速度（物理stepと把持resetのみ） | 206.820ステップ/秒 |
+| 環境step時間 / 把持reset時間 | 2.287秒 / 12.257秒 |
+| 学習中の把持試行 / 失敗 | 21 / 0 |
+| 評価seed / エピソード数 | 2,000,000〜2,000,009 / 10 |
+| Grasp成功 / 学習Transport成功 / 落下 | 10/10 / 0/10 / 0/10 |
+| 最終XY誤差：平均 / P95 / 最大 | 142.920mm / 207.880mm / 219.714mm |
+| 再開確認 | 3,008→3,168ステップ，追加の最適化40回 |
+
+`train_freq=16`のため，指定3,000ステップに対して実行数は3,008となった．
+評価の全10件は150ステップの時間上限で失敗し，Rustの成功・落下判定はいずれもFalseであった．
+Graspは`learned=False`，Transportは保存モデルの推論を使い`learned=True`と記録した．
+短い学習は保存・読み込みを含む動作確認であり，運搬性能を達成した結果ではない．
+実測の学習速度を単純に使うと200k〜300kステップは約20〜30分となるが，定期評価の時間は別途必要である．
+記録は`runs/so101-transport/smoke-seed-42/training_summary.json`，`evaluations.jsonl`，`evaluation-seed-2000000.jsonl`に保存した．
+これらとモデルはgit管理対象外であり，今回の変更もユーザーの指示に従ってコミットしていない．

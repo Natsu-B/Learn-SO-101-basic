@@ -23,6 +23,9 @@ def main():
     p.add_argument("--friction-sampling", choices=("uniform", "log"), default="log")
     p.add_argument("--tilt-penalty", type=float, default=0.0,
                    help="reward penalty per rad of cube tilt in the jaws (hand-off quality)")
+    p.add_argument("--reward", choices=("v1", "v3"), default="v1",
+                   help="v3: lift progress, stable hand-off, downstream IK pick-and-place; "
+                        "checkpoints selected by full success")
     p.add_argument("--eval-interval", type=int, default=5000)
     p.add_argument("--eval-episodes", type=int, default=6)
     a = p.parse_args()
@@ -31,7 +34,7 @@ def main():
                           gripper_scale=a.gripper_scale, mass_range=a.mass_range,
                           friction_range=a.friction_range,
                           friction_sampling=a.friction_sampling,
-                          tilt_penalty=a.tilt_penalty, eval_interval=a.eval_interval,
+                          tilt_penalty=a.tilt_penalty, reward=a.reward, eval_interval=a.eval_interval,
                           eval_episodes=a.eval_episodes)
     print(json.dumps(summary))
 

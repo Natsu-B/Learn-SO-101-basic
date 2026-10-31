@@ -121,3 +121,40 @@ def test_cube_tilt_is_zero_upright_and_penalty_defaults_off():
         assert e.tilt_penalty == 0.0
     finally:
         e.close()
+
+
+def test_stabilize_and_end_states_are_reported():
+    sim = PickPlaceSimulator()
+    try:
+        row = run_pick_place_episode(0, transport="scripted", sim=sim, stabilize=True)
+        names = [r["name"] for r in row["skills"]]
+        assert names == ["grasp", "stabilize", "transport", "place"]
+        assert row["success"] and all(not r["learned"] for r in row["skills"])
+        ends = {e["name"]: e for e in row["skill_end_states"]}
+        assert set(ends) == set(names)
+        assert ends["stabilize"]["pinched"] and ends["stabilize"]["speed_mps"] < 0.02
+        assert abs(ends["stabilize"]["height_m"] - 0.08) < 0.01
+        forces = sim.grip_forces()
+        assert forces["gripper_force_max"] > 0 and forces["table_normal"] > 0
+    finally:
+        sim.close()
+
+
+def test_v3_runs_to_base_hold_and_rewards_downstream_pick_and_place():
+    e = GoalGraspEnv(reward="v3", downstream=True, mass_range=(0.03, 0.03),
+                     friction_range=(1.0, 1.0))
+    try:
+        assert e.end_at == "base"
+        obs, info = e.reset(seed=0)
+        total, done = 0.0, False
+        while not done:
+            obs, r, terminated, truncated, info = e.step(np.zeros(ACTION_DIM, np.float32))
+            total += r
+            done = terminated or truncated
+        # Zero residual = IK Grasp: ends at its own Hold, at carry height.
+        assert terminated and info["is_success"]
+        assert info["transport_success"] and info["pipeline_success"]
+        # 5 (lift progress) + 2 + 3 (stable) + 3 + 10 (downstream), no action cost.
+        assert total == pytest.approx(23.0, abs=0.6)
+    finally:
+        e.close()

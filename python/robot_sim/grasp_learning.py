@@ -61,11 +61,15 @@ def evaluate_grasp(model, env, *, conditions, seeds, emit=None):
                 done = terminated or truncated
             row = dict(type="episode", mass=mass, friction=friction, seed=info["seed"],
                        success=info["is_success"], dropped=info["dropped"],
+                       pipeline_success=info.get("pipeline_success"),
                        steps=info["episode_step"], max_slip_m=info["max_slip"])
             rows.append(row)
             if emit is not None:
                 emit(row)
+    # Downstream runs only after a successful Grasp; None counts as failure.
+    pipeline = [bool(r["pipeline_success"]) for r in rows]
     return dict(success_rate=float(np.mean([r["success"] for r in rows])),
+                pipeline_success_rate=float(np.mean(pipeline)) if env.downstream else None,
                 drop_rate=float(np.mean([r["dropped"] for r in rows])),
                 mean_steps=float(np.mean([r["steps"] for r in rows])),
                 mean_max_slip_mm=float(np.mean([r["max_slip_m"] for r in rows]) * 1e3),
@@ -87,7 +91,7 @@ def load_grasp_policy(path):
 
 def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scale=0.06,
                 gripper_scale=0.35, mass_range=(0.02, 0.1), friction_range=(0.05, 1.5),
-                friction_sampling="log", tilt_penalty=0.0,
+                friction_sampling="log", tilt_penalty=0.0, reward="v1",
                 eval_interval=5000, eval_episodes=6, eval_seed=4000000,
                 buffer_size=200000, batch_size=256, learning_rate=3e-4,
                 train_freq=8, gradient_steps=4, learning_starts=1000):
@@ -107,6 +111,10 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
                       friction_range=list(friction_range), friction_sampling=friction_sampling)
     if tilt_penalty:
         env_config["tilt_penalty"] = tilt_penalty
+    if reward != "v1":
+        # v3: run to the base skill's own Hold, reward stable hand-off and the
+        # downstream IK pick-and-place; select checkpoints by full success.
+        env_config.update(reward=reward, downstream=True)
     config = dict(task="grasp", environment_version=ENV_VERSION, seed=seed, algorithm="SAC",
                   stable_baselines3_version=stable_baselines3.__version__, env=env_config,
                   hidden_physics="mass and friction randomized at reset; not observed",
@@ -122,6 +130,7 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
                                   interval=eval_interval, conditions=SELECTION_CONDITIONS))
     env = Monitor(GoalGraspEnv(**env_config))
     eval_env = GoalGraspEnv(**{**env_config, "friction_sampling": "uniform"})
+    pipeline_selection = bool(env_config.get("downstream"))
     config["criteria"] = env.unwrapped.criteria
     (output / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     env.reset(seed=seed)
@@ -140,7 +149,11 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
             report.pop("outcomes")
             report.update(training_steps=self.model.num_timesteps,
                           wall_seconds=time.perf_counter() - started)
-            score = [report["success_rate"], report["mean_max_slip_mm"]]
+            if pipeline_selection:
+                # Full pick-and-place success first, then Grasp success.
+                score = [report["pipeline_success_rate"], -report["success_rate"]]
+            else:
+                score = [report["success_rate"], report["mean_max_slip_mm"]]
             if score[0] > best[0] or (score[0] == best[0] and score[1] < best[1]):
                 best = score
                 self.model.save(output / "best")

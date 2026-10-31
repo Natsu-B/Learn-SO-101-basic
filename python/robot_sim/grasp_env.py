@@ -128,6 +128,7 @@ class GraspTracker:
         self.slip = 0.0
         self.max_slip = 0.0
         self.success = False
+        self.ever_success = False
         self.dropped = False
         self.tilt = 0.0
         self.max_tilt = 0.0
@@ -147,6 +148,7 @@ class GraspTracker:
         self.held = self.held + 1 if predicates["lifted"] else 0
         self.was_lifted |= predicates["lifted"]
         self.success = self.held >= self.hold_steps
+        self.ever_success |= self.success
         # Dropped only counts after the cube had been lifted at least once.
         self.dropped = self.was_lifted and predicates["dropped"]
         return self
@@ -157,7 +159,14 @@ class ResidualGrasp:
     and inference (the pipeline) both step through this class, so observation
     history, residual mapping and termination are identical."""
 
-    def __init__(self, sim, *, history, horizon, arm_scale, gripper_scale, criteria, bounds):
+    def __init__(self, sim, *, history, horizon, arm_scale, gripper_scale, criteria, bounds,
+                 end_at="success"):
+        if end_at not in ("success", "base"):
+            raise ValueError("end_at must be success or base")
+        # "success": stop as soon as the lift has been held 0.3 s (v1).
+        # "base": run until the scripted base skill finishes its own Hold at
+        # carry height, so the hand-off matches the IK Grasp's (v3).
+        self.end_at = end_at
         self.sim = sim
         self.horizon = int(horizon)
         self.arm_scale = float(arm_scale)
@@ -192,25 +201,43 @@ class ResidualGrasp:
         self.step_count += 1
         predicates = self.sim.predicates()
         t = self.tracker.update(self.state, predicates)
-        terminated = t.success or t.dropped
-        base = None if terminated else self._base()
+        if self.end_at == "success":
+            terminated = t.success or t.dropped
+            base = None if terminated else self._base()
+            # The scripted skill can end on its own (its success or a hold failure);
+            # without a base command the episode ends there and is judged by the tracker.
+            truncated = not terminated and (base is None or self.step_count >= self.horizon)
+        else:
+            base = None if t.dropped else self._base()
+            # The base skill ending (its Hold success or hold failure) is a true end.
+            terminated = t.dropped or base is None
+            truncated = not terminated and self.step_count >= self.horizon
         if base is not None:
             self.base = base
-        # The scripted skill can end on its own (its success or a hold failure);
-        # without a base command the episode ends there and is judged by the tracker.
-        truncated = not terminated and (base is None or self.step_count >= self.horizon)
+        self.predicates = predicates
         self.done = terminated or truncated
         self.obs = self.history.push(action, self._observation(base))
         return predicates, terminated, truncated
 
+    @property
+    def success(self):
+        """Grasp success for the hand-off: the 0.3 s lift was achieved, nothing
+        dropped, and (for end_at="base") the cube is still lifted at the end."""
+        t = self.tracker
+        if self.end_at == "success":
+            return bool(t.success)
+        return bool(t.ever_success and not t.dropped and self.predicates["lifted"])
+
 
 class GoalGraspEnv(gym.Env):
     metadata = {"render_modes": []}
+    # Scripted Grasp carry height (skills.rs ScriptedGrasp::carry_height).
+    CARRY_HEIGHT = 0.08
 
     def __init__(self, *, history=0, horizon=75, arm_scale=0.03, gripper_scale=0.35,
                  mass_range=(0.02, 0.05), friction_range=(0.8, 1.5), friction_sampling="uniform",
                  action_penalty=0.05, slip_penalty=50.0, tilt_penalty=0.0, max_retries=3,
-                 shape="cube"):
+                 shape="cube", reward="v1", end_at=None, downstream=False):
         super().__init__()
         for name, value in (("arm_scale", arm_scale), ("gripper_scale", gripper_scale)):
             if not np.isfinite(value) or value < 0:
@@ -225,6 +252,14 @@ class GoalGraspEnv(gym.Env):
         # Hand-off quality: a cube tilted in the jaws later topples at Place.
         self.tilt_penalty = float(tilt_penalty)
         self.max_retries = int(max_retries)
+        if reward not in ("v1", "v3"):
+            raise ValueError("reward must be v1 or v3")
+        self.reward_version = reward
+        self.end_at = end_at or ("base" if reward == "v3" else "success")
+        # v3: after a successful Grasp, run IK Transport and Place in Rust and
+        # reward the whole pick-and-place (the Grasp's downstream consequence).
+        self.downstream = bool(downstream)
+        self.carry_height = self.CARRY_HEIGHT
         if friction_sampling not in ("uniform", "log"):
             raise ValueError("friction_sampling must be uniform or log")
         if friction_sampling == "log" and friction_range is None:
@@ -262,13 +297,19 @@ class GoalGraspEnv(gym.Env):
         self.requested_seed = requested
         self.episode = ResidualGrasp(self.sim, history=self.history_length, horizon=self.horizon,
                                      arm_scale=self.arm_scale, gripper_scale=self.gripper_scale,
-                                     criteria=self.criteria, bounds=self.bounds)
+                                     criteria=self.criteria, bounds=self.bounds,
+                                     end_at=self.end_at)
+        self.downstream_result = None
+        self._potential = 0.0
         self._needs_reset = False
         return self.episode.obs, self._info()
 
     def _info(self):
         e = self.episode
-        return dict(is_success=e.tracker.success, dropped=e.tracker.dropped,
+        r = self.downstream_result
+        return dict(is_success=e.success if e.step_count else False, dropped=e.tracker.dropped,
+                    pipeline_success=None if r is None else r["placed"],
+                    transport_success=None if r is None else r["transport"],
                     max_tilt=e.tracker.max_tilt,
                     max_slip=e.tracker.max_slip, seed=self.episode_seed,
                     requested_seed=self.requested_seed, retries=self.retries,
@@ -279,6 +320,10 @@ class GoalGraspEnv(gym.Env):
             raise gym.error.ResetNeeded("call reset() before step()")
         e = self.episode
         predicates, terminated, truncated = e.step(action)
+        if self.reward_version == "v3":
+            reward = self._reward_v3(action, predicates, terminated or truncated)
+            self._needs_reset = e.done
+            return e.obs, float(reward), bool(terminated), bool(truncated), self._info()
         t = e.tracker
         z = e.state["cube_pos"][2] - self.criteria["cube_half"]
         pinched = e.state["contacts"]["pinched"]
@@ -294,6 +339,39 @@ class GoalGraspEnv(gym.Env):
             reward -= 10.
         self._needs_reset = e.done
         return e.obs, float(reward), bool(terminated), bool(truncated), self._info()
+
+    def _reward_v3(self, action, predicates, done):
+        """Lift progress (potential-based), action cost, and terminal terms:
+        drop, stable grasp at the hand-off, and downstream pick-and-place."""
+        e = self.episode
+        z = e.state["cube_pos"][2] - self.criteria["cube_half"]
+        pinched = e.state["contacts"]["pinched"]
+        potential = float(pinched) * float(np.clip(z / self.carry_height, 0., 1.))
+        reward = 5.0 * (potential - self._potential)
+        self._potential = potential
+        reward -= self.action_penalty * float(np.square(action).sum())
+        if e.tracker.dropped:
+            return reward - 10.
+        if not done:
+            return reward
+        if e.success:
+            velocity = np.asarray(e.state["cube_vel"][:3])
+            stable = (np.linalg.norm(velocity) < 0.05
+                      and e.tracker.tilt < np.radians(5.0))
+            reward += 2.0 + 3.0 * stable
+            if self.downstream:
+                self.downstream_result = self.run_downstream()
+                reward += 3.0 * self.downstream_result["transport"]
+                reward += 10.0 * self.downstream_result["placed"]
+        return reward
+
+    def run_downstream(self):
+        """IK Transport and Place from the hand-off state (Rust, no policy)."""
+        transport = self.sim.run_skill("transport")["success"]
+        placed = False
+        if transport:
+            placed = self.sim.run_skill("place")["success"] and self.sim.predicates()["placed"]
+        return dict(transport=bool(transport), placed=bool(placed))
 
     def close(self):
         self._needs_reset = True

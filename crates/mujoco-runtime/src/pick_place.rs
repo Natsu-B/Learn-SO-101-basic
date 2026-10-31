@@ -90,7 +90,7 @@ pub struct ObjectRandomization {
 }
 impl ObjectRandomization {
     pub const MASS_LIMITS: [f64; 2] = [1e-3, 1.0];
-    pub const FRICTION_LIMITS: [f64; 2] = [0.05, 3.0];
+    pub const FRICTION_LIMITS: [f64; 2] = [0.01, 3.0];
     pub fn enabled(&self) -> bool {
         self.mass.is_some() || self.friction.is_some()
     }

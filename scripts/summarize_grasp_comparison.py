@@ -8,15 +8,16 @@ REGIONS = ("easy", "hard", "out_of_range")
 
 
 def load(directory, name):
+    """All ``NAME-*-summary.jsonl`` files (including supplements), keyed by the
+    region label each summary carries."""
     rows = {}
-    for region in REGIONS:
-        path = Path(directory) / f"{name}-{region}-summary.jsonl"
-        if not path.exists():
-            continue
+    for path in sorted(Path(directory).glob(f"{name}-*-summary.jsonl")):
+        if path.name[len(name) + 1:].split("-")[0] not in REGIONS + ("out_mu003",):
+            continue  # another controller whose name shares this prefix
         for line in path.read_text().splitlines():
             if line.startswith("{"):
                 d = json.loads(line)
-                rows[(region, d["mass"], d["friction"])] = d
+                rows[(d["region"], d["mass"], d["friction"])] = d
     return rows
 
 

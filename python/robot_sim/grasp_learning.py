@@ -19,6 +19,34 @@ ENV_VERSION = "goal-grasp-residual-v1"
 SELECTION_CONDITIONS = [(0.035, 1.15), (0.05, 0.8), (0.03, 0.1), (0.07, 0.07), (0.05, 0.15)]
 
 
+class FixedResidualPolicy:
+    """Non-learned baseline: the IK Grasp plus a constant joint offset (rad).
+
+    Uses the same residual path as the learned policy; ``learned`` is False
+    so reports keep it separate from AI skills."""
+
+    learned = False
+
+    def __init__(self, offset, *, gripper=0.0, horizon=75, gripper_scale=0.35):
+        offset = np.asarray(offset, np.float64)
+        if offset.shape != (5,) or not np.isfinite(offset).all():
+            raise ValueError("offset must be five finite joint offsets")
+        self.arm_scale = max(float(np.abs(offset).max()), 1e-9)
+        self.action = np.r_[offset / self.arm_scale, gripper / gripper_scale].astype(np.float32)
+        if np.abs(self.action).max() > 1:
+            raise ValueError("gripper offset exceeds gripper_scale")
+        self.config = dict(history=0, horizon=horizon, arm_scale=self.arm_scale,
+                           gripper_scale=gripper_scale)
+
+    def predict(self, obs, deterministic=True):
+        return self.action.copy(), None
+
+
+def wrist_roll_policy(radians):
+    """Constant wrist_roll correction (joint index 4)."""
+    return FixedResidualPolicy([0, 0, 0, 0, radians])
+
+
 def evaluate_grasp(model, env, *, conditions, seeds, emit=None):
     """Deterministic residual policy on fixed conditions; returns rates by condition."""
     rows = []

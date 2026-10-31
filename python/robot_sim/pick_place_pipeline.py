@@ -12,7 +12,8 @@ def run_learned_grasp(sim, model, config, *, on_step=None):
     """Scripted approach (IK) to the pre-close state, then the residual policy.
 
     Uses the same ResidualGrasp core as GoalGraspEnv, without reset or retry.
-    Returns a skill report; ``learned`` is True only if the policy acted.
+    Returns a skill report; ``learned`` is True only if a learned policy acted
+    (a model with ``learned = False``, such as a fixed residual, reports False).
     """
     from .grasp_env import ResidualGrasp, approach_to_pre_close
 
@@ -39,7 +40,7 @@ def run_learned_grasp(sim, model, config, *, on_step=None):
         if on_step is not None:
             on_step(episode.state, "grasp", True)
     t = episode.tracker
-    return dict(name="grasp", learned=True, success=bool(t.success),
+    return dict(name="grasp", learned=bool(getattr(model, "learned", True)), success=bool(t.success),
                 status="success" if t.success else "failure",
                 steps=approach_steps + episode.step_count,
                 reason=None if t.success else ("dropped" if t.dropped else "not held"),

@@ -87,12 +87,25 @@ def main():
     parser.add_argument("--region", choices=("in", "out", "both"), default="both")
     parser.add_argument("--mass", type=float, nargs="*", help="override the mass grid (kg)")
     parser.add_argument("--friction", type=float, nargs="*", help="override the friction grid")
+    parser.add_argument("--conditions", type=float, nargs="*",
+                        help="explicit mass friction pairs (instead of a grid)")
+    parser.add_argument("--label", default="custom", help="region label for --conditions")
     parser.add_argument("--shape", choices=("cube", "sphere"), default="cube")
     parser.add_argument("--grasp-model", help="residual Grasp checkpoint (best.zip)")
+    parser.add_argument("--fixed-wrist-roll", type=float,
+                        help="non-learned baseline: IK Grasp + constant wrist_roll offset (rad)")
     parser.add_argument("--grasp-fallback", action="store_true",
                         help="run the IK Grasp after a failed learned Grasp")
     args = parser.parse_args()
     grasp_options, controller = {}, "scripted IK (no learned skill)"
+    if args.grasp_model and args.fixed_wrist_roll is not None:
+        parser.error("--grasp-model and --fixed-wrist-roll are exclusive")
+    if args.fixed_wrist_roll is not None:
+        from robot_sim.grasp_learning import wrist_roll_policy
+        policy = wrist_roll_policy(args.fixed_wrist_roll)
+        grasp_options = dict(grasp="learned", grasp_model=policy, grasp_config=policy.config,
+                             grasp_fallback=args.grasp_fallback)
+        controller = f"IK Grasp + fixed wrist_roll {args.fixed_wrist_roll:+.3f} rad (not learned)"
     if args.grasp_model:
         from robot_sim.grasp_learning import load_grasp_policy
         model, config = load_grasp_policy(args.grasp_model)
@@ -101,7 +114,11 @@ def main():
         controller = (f"learned residual Grasp (SAC, history={config['history']}) "
                       f"from {args.grasp_model}" + (" + IK fallback" if args.grasp_fallback else ""))
     grids = []
-    if args.mass or args.friction:
+    if args.conditions:
+        if len(args.conditions) % 2:
+            parser.error("--conditions takes mass friction pairs")
+        grids.append((args.label, list(zip(args.conditions[::2], args.conditions[1::2]))))
+    elif args.mass or args.friction:
         grids.append(("custom", dict(mass=args.mass or IN_RANGE["mass"],
                                      friction=args.friction or IN_RANGE["friction"])))
     else:
@@ -113,7 +130,9 @@ def main():
     sim = PickPlaceSimulator(shape=args.shape)
     try:
         for region, grid in grids:
-            for mass, friction in itertools.product(grid["mass"], grid["friction"]):
+            pairs = grid if isinstance(grid, list) else itertools.product(grid["mass"],
+                                                                          grid["friction"])
+            for mass, friction in pairs:
                 started = time.perf_counter()
                 rows = run_condition(sim, mass, friction, seeds, grasp_options)
                 summary = summarize(rows, mass, friction, region, controller)

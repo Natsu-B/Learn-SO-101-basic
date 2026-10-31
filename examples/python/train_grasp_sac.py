@@ -21,6 +21,8 @@ def main():
     p.add_argument("--mass-range", type=float, nargs=2, default=(0.02, 0.1))
     p.add_argument("--friction-range", type=float, nargs=2, default=(0.05, 1.5))
     p.add_argument("--friction-sampling", choices=("uniform", "log"), default="log")
+    p.add_argument("--tilt-penalty", type=float, default=0.0,
+                   help="reward penalty per rad of cube tilt in the jaws (hand-off quality)")
     p.add_argument("--eval-interval", type=int, default=5000)
     p.add_argument("--eval-episodes", type=int, default=6)
     a = p.parse_args()
@@ -28,7 +30,8 @@ def main():
                           horizon=a.horizon, arm_scale=a.arm_scale,
                           gripper_scale=a.gripper_scale, mass_range=a.mass_range,
                           friction_range=a.friction_range,
-                          friction_sampling=a.friction_sampling, eval_interval=a.eval_interval,
+                          friction_sampling=a.friction_sampling,
+                          tilt_penalty=a.tilt_penalty, eval_interval=a.eval_interval,
                           eval_episodes=a.eval_episodes)
     print(json.dumps(summary))
 

@@ -110,3 +110,14 @@ def test_scripted_approach_stops_at_close_phase():
         assert sim.skill_phase() == "close"
     finally:
         sim.close()
+
+
+def test_cube_tilt_is_zero_upright_and_penalty_defaults_off():
+    from robot_sim.grasp_env import cube_tilt
+    assert cube_tilt([1, 0, 0, 0]) == 0
+    assert np.isclose(cube_tilt([np.cos(0.25), np.sin(0.25), 0, 0]), 0.5)
+    e = GoalGraspEnv()
+    try:
+        assert e.tilt_penalty == 0.0
+    finally:
+        e.close()

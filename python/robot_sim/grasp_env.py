@@ -109,6 +109,12 @@ def start_pre_close(sim, seed, *, max_retries=3):
     raise RuntimeError(f"approach failed {max_retries + 1} times from seed {seed}")
 
 
+def cube_tilt(quat):
+    """Angle (rad) between the cube's local z axis and world z."""
+    w, x, y, z = quat
+    return float(np.arccos(np.clip(1.0 - 2.0 * (x * x + y * y), -1.0, 1.0)))
+
+
 class GraspTracker:
     """Success, drop and slip bookkeeping from Rust predicates and true motion."""
 
@@ -123,6 +129,8 @@ class GraspTracker:
         self.max_slip = 0.0
         self.success = False
         self.dropped = False
+        self.tilt = 0.0
+        self.max_tilt = 0.0
 
     def update(self, state, predicates):
         offset = np.subtract(state["cube_pos"], state["grasp_center"])
@@ -134,6 +142,8 @@ class GraspTracker:
                 self.reference = offset
             self.slip = float(np.linalg.norm(offset - self.reference))
             self.max_slip = max(self.max_slip, self.slip)
+        self.tilt = cube_tilt(state["cube_quat"])
+        self.max_tilt = max(self.max_tilt, self.tilt)
         self.held = self.held + 1 if predicates["lifted"] else 0
         self.was_lifted |= predicates["lifted"]
         self.success = self.held >= self.hold_steps
@@ -199,7 +209,8 @@ class GoalGraspEnv(gym.Env):
 
     def __init__(self, *, history=0, horizon=75, arm_scale=0.03, gripper_scale=0.35,
                  mass_range=(0.02, 0.05), friction_range=(0.8, 1.5), friction_sampling="uniform",
-                 action_penalty=0.05, slip_penalty=50.0, max_retries=3, shape="cube"):
+                 action_penalty=0.05, slip_penalty=50.0, tilt_penalty=0.0, max_retries=3,
+                 shape="cube"):
         super().__init__()
         for name, value in (("arm_scale", arm_scale), ("gripper_scale", gripper_scale)):
             if not np.isfinite(value) or value < 0:
@@ -211,6 +222,8 @@ class GoalGraspEnv(gym.Env):
         self.gripper_scale = float(gripper_scale)
         self.action_penalty = float(action_penalty)
         self.slip_penalty = float(slip_penalty)
+        # Hand-off quality: a cube tilted in the jaws later topples at Place.
+        self.tilt_penalty = float(tilt_penalty)
         self.max_retries = int(max_retries)
         if friction_sampling not in ("uniform", "log"):
             raise ValueError("friction_sampling must be uniform or log")
@@ -256,6 +269,7 @@ class GoalGraspEnv(gym.Env):
     def _info(self):
         e = self.episode
         return dict(is_success=e.tracker.success, dropped=e.tracker.dropped,
+                    max_tilt=e.tracker.max_tilt,
                     max_slip=e.tracker.max_slip, seed=self.episode_seed,
                     requested_seed=self.requested_seed, retries=self.retries,
                     episode_step=e.step_count)
@@ -272,6 +286,7 @@ class GoalGraspEnv(gym.Env):
                   + pinched * float(np.clip(z / self.criteria["lift_height"], 0., 1.))
                   + 1.0 * predicates["lifted"]
                   - self.slip_penalty * t.slip
+                  - self.tilt_penalty * t.tilt
                   - self.action_penalty * float(np.square(action).sum()))
         if t.success:
             reward += 10.

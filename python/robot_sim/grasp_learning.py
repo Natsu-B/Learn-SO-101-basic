@@ -87,7 +87,7 @@ def load_grasp_policy(path):
 
 def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scale=0.06,
                 gripper_scale=0.35, mass_range=(0.02, 0.1), friction_range=(0.05, 1.5),
-                friction_sampling="log",
+                friction_sampling="log", tilt_penalty=0.0,
                 eval_interval=5000, eval_episodes=6, eval_seed=4000000,
                 buffer_size=200000, batch_size=256, learning_rate=3e-4,
                 train_freq=8, gradient_steps=4, learning_starts=1000):
@@ -105,6 +105,8 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
     env_config = dict(history=history, horizon=horizon, arm_scale=arm_scale,
                       gripper_scale=gripper_scale, mass_range=list(mass_range),
                       friction_range=list(friction_range), friction_sampling=friction_sampling)
+    if tilt_penalty:
+        env_config["tilt_penalty"] = tilt_penalty
     config = dict(task="grasp", environment_version=ENV_VERSION, seed=seed, algorithm="SAC",
                   stable_baselines3_version=stable_baselines3.__version__, env=env_config,
                   hidden_physics="mass and friction randomized at reset; not observed",

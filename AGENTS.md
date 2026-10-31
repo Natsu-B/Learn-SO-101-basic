@@ -134,7 +134,7 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 適応: 接触前の行動は条件によらず一致し，接触の1 step後に分かれる（観測した反応に応じて変えている）．ただし主にグリッパの残差に現れ，方向は学習seedごとに異なり，性能向上には結びつかなかった．
 - 球体（`shape="sphere"`）: 学習なしのIKでGrasp 30/30，Transport 30/30，Place 0/30（転がり）．独立した発展課題として扱う．
 - 動画 `runs/video/grasp_hidden_physics.mp4`（50.7秒，学習Grasp＋IK fallback，真の物理を画面に表示）．
-- 進行中: tilt罰付きv2（`runs/so101-grasp/v2-tilt-h{0,4}-seed-42`）．
+- tilt罰付きv2（`runs/so101-grasp/v2-tilt-h{0,4}-seed-42`）は改善しなかった（B v2は持ち上げを避ける局所解に入り，容易な条件のGraspが99/150）．受け渡しの品質は後段の成否を含めて評価する必要がある．
 
 未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり）．
 

@@ -72,33 +72,42 @@ class VideoWriter:
 
 
 class Overlay:
-    def __init__(self, width, height, transport):
+    def __init__(self, width, height, transport, grasp="scripted"):
         self.width, self.height = width, height
         self.transport = transport
+        self.grasp = grasp
         self.scale = width / 1280
         self.font = ImageFont.load_default(size=max(12, round(25 * self.scale)))
         self.small = ImageFont.load_default(size=max(10, round(20 * self.scale)))
 
-    def frame(self, rgb, state, *, seed, episode, total, skill, learned, result=None):
+    def frame(self, rgb, state, *, seed, episode, total, skill, learned, result=None,
+              physics=None):
         image = Image.frombytes("RGB", (self.width, self.height), rgb)
         draw = ImageDraw.Draw(image)
         pad = max(8, round(20 * self.scale))
         line = max(17, round(35 * self.scale))
-        header = pad * 2 + 3 * line
+        header = pad * 2 + (4 if physics else 3) * line
         draw.rectangle((0, 0, self.width, header), fill=(17, 24, 36))
         draw.text((pad, pad), f"SO-101  |  Episode {episode}/{total}  |  Seed {seed}",
                   font=self.font, fill="white")
         color = (72, 224, 170) if learned else (123, 189, 255)
-        label = "LEARNED (SAC)" if learned else "IK (scripted)"
+        label = ("LEARNED (SAC residual on IK)" if skill == "grasp" else "LEARNED (SAC)") \
+            if learned else "IK (scripted)"
         draw.text((pad, pad + line), f"{skill.upper()}  |  {label}", font=self.font, fill=color)
         error_mm = np.linalg.norm(np.asarray(state["cube_pos"])[:2] - np.asarray(state["target"])[:2]) * 1000
         draw.text((pad, pad + 2 * line), f"Cube -> target XY error: {error_mm:.2f} mm",
                   font=self.small, fill=(224, 230, 238))
+        if physics:
+            draw.text((pad, pad + 3 * line),
+                      f"Hidden physics (not observed by the policy): mass {physics['mass'] * 1000:.0f} g,"
+                      f" friction {physics['friction']:.2f}", font=self.small, fill=(255, 214, 120))
         footer = self.height - pad - 2 * line
         draw.rectangle((0, footer - pad, self.width, self.height), fill=(17, 24, 36))
         if result is None:
-            draw.text((pad, footer), "Grasp: IK   >   Transport: SAC   >   Place: IK" if self.transport == "learned"
-                      else "Grasp: IK   >   Transport: IK   >   Place: IK",
+            grasp = {"scripted": "IK", "learned": "IK approach + SAC residual",
+                     "fixed": "IK + fixed wrist offset"}[self.grasp]
+            transport = "SAC" if self.transport == "learned" else "IK"
+            draw.text((pad, footer), f"Grasp: {grasp}   >   Transport: {transport}   >   Place: IK",
                       font=self.small, fill=(224, 230, 238))
             draw.text((pad, footer + line), "Red cube  |  Green target  |  30 fps",
                       font=self.small, fill=(224, 230, 238))
@@ -121,7 +130,14 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("runs/video/pick_place_demo.mp4"))
     parser.add_argument("--transport", choices=("learned", "scripted"), default="learned")
     parser.add_argument("--hold-frames", type=int, default=90)
+    parser.add_argument("--grasp-model", type=Path, help="residual Grasp checkpoint (best.zip)")
+    parser.add_argument("--grasp-fallback", action="store_true",
+                        help="run the IK Grasp after a failed learned Grasp")
+    parser.add_argument("--physics", type=float, nargs="+",
+                        help="mass friction pairs applied to the seeds in turn (hidden from policies)")
     args = parser.parse_args()
+    if args.physics and len(args.physics) % 2:
+        parser.error("--physics takes mass friction pairs")
     if any(not 0 <= seed < 2**64 for seed in args.seeds):
         parser.error("seeds must fit in uint64")
     if (not 320 <= args.width <= 3840 or not 240 <= args.height <= 2160
@@ -158,21 +174,34 @@ def main():
                            max_delta=load_env.max_delta, rate_limit=load_env.rate_limit)
         else:
             sim = PickPlaceSimulator()
+        if args.grasp_model:
+            from robot_sim.grasp_learning import load_grasp_policy
+            grasp_model, grasp_config = load_grasp_policy(args.grasp_model)
+            options.update(grasp="learned", grasp_model=grasp_model, grasp_config=grasp_config,
+                           grasp_fallback=args.grasp_fallback)
+        pairs = list(zip(args.physics[::2], args.physics[1::2])) if args.physics else []
         renderer = PickPlaceRenderer(sim, args.width, args.height)
         writer = VideoWriter(args.output, args.width, args.height)
-        overlay = Overlay(args.width, args.height, args.transport)
+        overlay = Overlay(args.width, args.height, args.transport,
+                          "learned" if args.grasp_model else "scripted")
         outcomes = []
         stills = {}
         # Capture a useful late frame from the first episode of each skill.
         for episode, seed in enumerate(args.seeds, start=1):
             moments = {}
             last = None
+            physics = None
+            if pairs:
+                mass, friction = pairs[(episode - 1) % len(pairs)]
+                sim.set_object_randomization(mass=(mass, mass), friction=(friction, friction))
+                physics = dict(mass=mass, friction=friction)
 
             def on_step(state, skill, learned):
                 nonlocal last
                 rgb = renderer.render()
                 image = overlay.frame(rgb, state, seed=seed, episode=episode,
-                                      total=len(args.seeds), skill=skill, learned=learned)
+                                      total=len(args.seeds), skill=skill, learned=learned,
+                                      physics=physics)
                 writer.write(image)
                 last = (rgb, state, skill, learned)
                 if episode == 1:
@@ -181,10 +210,13 @@ def main():
             row = run_pick_place_episode(seed, sim=sim, model=model, transport=args.transport,
                                          on_step=on_step, **options)
             row["type"] = "episode"
+            if physics:
+                row["object_physics"] = sim.object_physics()
             if last is not None:
                 rgb, state, skill, learned = last
                 image = overlay.frame(rgb, state, seed=seed, episode=episode,
-                                      total=len(args.seeds), skill=skill, learned=learned, result=row)
+                                      total=len(args.seeds), skill=skill, learned=learned, result=row,
+                                      physics=physics)
                 for _ in range(args.hold_frames):
                     writer.write(image)
             for skill, (image, frame_index) in moments.items():
@@ -199,6 +231,10 @@ def main():
                   f"XY {row['final_xy_error'] * 1000:.6f} mm, {row['control_steps']} steps",
                   file=sys.stderr, flush=True)
         summary = summarize_pick_place(outcomes, transport=args.transport)
+        if args.grasp_model:
+            summary.update(grasp_model=str(args.grasp_model), grasp_fallback=args.grasp_fallback)
+            summary["skills"]["grasp"]["learned"] = True
+            summary["learned_skills"] = ["grasp", *summary["learned_skills"]]
         summary.update(seeds=args.seeds, output=str(args.output), fps=FPS,
                        width=args.width, height=args.height, frames=writer.frames,
                        duration_seconds=writer.frames / FPS, hold_frames=args.hold_frames, stills=stills)

@@ -530,6 +530,46 @@ impl PickPlaceSim {
         out
     }
 
+    /// Effective parameters of the object's active contacts as MuJoCo resolved
+    /// them in mjData.contact (after priority/mixing). Diagnostic only.
+    pub fn object_contact_parameters(&self) -> Vec<ContactParameters> {
+        let m = &self.sim.model;
+        let mut out = Vec::new();
+        for c in self.sim.data.contact() {
+            let (Some(a), Some(b)) = c.geom() else {
+                continue;
+            };
+            let other = if a == self.cube_geom {
+                b
+            } else if b == self.cube_geom {
+                a
+            } else {
+                continue;
+            };
+            let body = m.geom_bodyid(other);
+            let partner = if other == self.table_geom {
+                "table"
+            } else if body == self.fixed_jaw_body {
+                "fixed_jaw"
+            } else if body == self.moving_jaw_body {
+                "moving_jaw"
+            } else {
+                "other"
+            };
+            out.push(ContactParameters {
+                partner,
+                dist: c.dist(),
+                dim: c.dim(),
+                friction: c.friction(),
+                solref: c.solref(),
+                solreffriction: c.solreffriction(),
+                solimp: c.solimp(),
+                includemargin: c.includemargin(),
+            });
+        }
+        out
+    }
+
     pub fn state(&self) -> PickPlaceState {
         let js = self.sim.state();
         let (gp, ga) = self.gripper_pose();
@@ -692,6 +732,19 @@ impl PickPlaceSim {
         let pos_err = err[..3].iter().map(|v| v * v).sum::<f64>().sqrt();
         Ok((q, pos_err))
     }
+}
+
+/// One object contact as resolved by MuJoCo (see `object_contact_parameters`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContactParameters {
+    pub partner: &'static str,
+    pub dist: f64,
+    pub dim: usize,
+    pub friction: [f64; 5],
+    pub solref: [f64; 2],
+    pub solreffriction: [f64; 2],
+    pub solimp: [f64; 5],
+    pub includemargin: f64,
 }
 
 /// IK goal for the pinch centre. `axis_weight` converts axis error (rad) to metres.

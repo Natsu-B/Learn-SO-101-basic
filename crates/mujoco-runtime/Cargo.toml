@@ -34,6 +34,10 @@ name = "ur5e_reach"
 path = "../../examples/rust/ur5e_reach.rs"
 
 [[example]]
+name = "contact_probe"
+path = "../../examples/rust/contact_probe.rs"
+
+[[example]]
 name = "shape_probe"
 path = "../../examples/rust/shape_probe.rs"
 

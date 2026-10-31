@@ -8,6 +8,34 @@ from ._native import CONTROL_PERIOD, GRIPPER_CLOSED, PickPlaceSimulator
 from .transport_env import transport_command, transport_observation
 
 
+def chain_succeeded(reports):
+    """The chain from the last Grasp attempt (after any fallback) is
+    Grasp [-> Stabilize] -> Transport -> Place, and every step succeeded."""
+    names = [r["name"] for r in reports]
+    start = len(names) - 1 - names[::-1].index("grasp") if "grasp" in names else 0
+    chain = reports[start:]
+    return ([r["name"] for r in chain] in (["grasp", "transport", "place"],
+                                           ["grasp", "stabilize", "transport", "place"])
+            and all(r["success"] for r in chain))
+
+
+def skill_end_state(sim, name):
+    """Physical hand-off state after a skill (true state, for logs only)."""
+    from .grasp_env import cube_tilt
+
+    state = sim.state()
+    half = sim.criteria()["cube_half"]
+    velocity = np.asarray(state["cube_vel"], np.float64)
+    offset = np.subtract(state["cube_pos"], state["grasp_center"])
+    return dict(name=name, height_m=float(state["cube_pos"][2] - half),
+                speed_mps=float(np.linalg.norm(velocity[:3])),
+                angular_speed_rps=float(np.linalg.norm(velocity[3:])),
+                tilt_deg=float(np.degrees(cube_tilt(state["cube_quat"]))),
+                gripper_rad=float(state["gripper"]), cube_in_jaws_m=offset.tolist(),
+                pinched=bool(state["contacts"]["pinched"]),
+                table=bool(state["contacts"]["table"]))
+
+
 def run_learned_grasp(sim, model, config, *, on_step=None):
     """Scripted approach (IK) to the pre-close state, then the residual policy.
 
@@ -33,24 +61,27 @@ def run_learned_grasp(sim, model, config, *, on_step=None):
     episode = ResidualGrasp(sim, history=config["history"], horizon=config["horizon"],
                             arm_scale=config["arm_scale"], gripper_scale=config["gripper_scale"],
                             criteria=sim.criteria(),
-                            bounds=np.asarray(sim.action_bounds(), np.float64))
+                            bounds=np.asarray(sim.action_bounds(), np.float64),
+                            end_at=config.get("end_at") or (
+                                "base" if config.get("reward") == "v3" else "success"))
     while not episode.done:
         action, _ = model.predict(episode.obs, deterministic=True)
         episode.step(action)
         if on_step is not None:
             on_step(episode.state, "grasp", True)
     t = episode.tracker
-    return dict(name="grasp", learned=bool(getattr(model, "learned", True)), success=bool(t.success),
-                status="success" if t.success else "failure",
+    ok = episode.success
+    return dict(name="grasp", learned=bool(getattr(model, "learned", True)), success=ok,
+                status="success" if ok else "failure",
                 steps=approach_steps + episode.step_count,
-                reason=None if t.success else ("dropped" if t.dropped else "not held"),
+                reason=None if ok else ("dropped" if t.dropped else "not held"),
                 approach_steps=approach_steps, max_slip_m=t.max_slip)
 
 
 def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                            max_transport_steps=150, max_delta=0.05, rate_limit=0.1,
                            on_step=None, grasp="scripted", grasp_model=None, grasp_config=None,
-                           grasp_fallback=False):
+                           grasp_fallback=False, stabilize=False):
     """Run one native seed and return an EpisodeReport-compatible dictionary.
 
     ``model`` is a loaded SAC policy with ``predict(obs, deterministic=True)``.
@@ -64,6 +95,12 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
     checkpoint ``grasp_config``). With ``grasp_fallback`` a failed learned
     Grasp is followed by a fresh scripted Grasp from the resulting state (no
     reset); both attempts are reported and the fallback is ``learned=False``.
+    ``stabilize`` inserts the scripted Stabilize skill (IK: carry height, wait
+    until still) between a successful Grasp and Transport; it is reported as
+    its own skill and counts toward overall success.
+
+    ``skill_end_states`` records height, speed, tilt, gripper angle and cube
+    offset in the jaws after every attempted skill (true state, logs only).
 
     As in Rust, only attempted skills appear in the report. ``dropped`` records
     Rust's dropped predicate during Transport: the initial table state and the
@@ -109,14 +146,21 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                     on_step(sim.state(), name, False)
             return sim.skill_report()
 
+        end_states = []
         if grasp == "learned":
             reports.append(run_learned_grasp(sim, grasp_model, grasp_config, on_step=on_step))
+            end_states.append(skill_end_state(sim, "grasp"))
             if not reports[-1]["success"] and grasp_fallback:
                 fallback = scripted("grasp")
                 fallback["fallback"] = True
                 reports.append(fallback)
+                end_states.append(skill_end_state(sim, "grasp"))
         else:
             reports.append(scripted("grasp"))
+            end_states.append(skill_end_state(sim, "grasp"))
+        if reports[-1]["success"] and stabilize:
+            reports.append(scripted("stabilize"))
+            end_states.append(skill_end_state(sim, "stabilize"))
         if reports[-1]["success"]:
             if transport == "scripted":
                 reports.append(scripted("transport"))
@@ -148,18 +192,19 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                                     status="success" if success else "failure", steps=steps,
                                     reason=None if success else
                                     ("dropped" if predicates["dropped"] else "timeout")))
+            end_states.append(skill_end_state(sim, "transport"))
             if reports[-1]["success"]:
                 reports.append(scripted("place"))
+                end_states.append(skill_end_state(sim, "place"))
 
         final = sim.state()
         placed = sim.predicates()["placed"]
         return dict(seed=int(seed), cube_initial=initial["cube_pos"], target=final["target"],
                     cube_final=final["cube_pos"], final_xy_error=float(np.linalg.norm(
                         np.asarray(final["cube_pos"])[:2] - np.asarray(final["target"])[:2])),
-                    success=bool([r["name"] for r in reports][-3:] == ["grasp", "transport", "place"]
-                                 and all(r["success"] for r in reports[-3:]) and placed),
+                    success=bool(chain_succeeded(reports) and placed),
                     skills=reports, control_steps=sum(r["steps"] for r in reports),
-                    dropped=bool(dropped))
+                    dropped=bool(dropped), skill_end_states=end_states)
     finally:
         if owns_sim:
             sim.close()

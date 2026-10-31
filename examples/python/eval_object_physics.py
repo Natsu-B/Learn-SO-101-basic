@@ -87,6 +87,7 @@ def main():
     parser.add_argument("--region", choices=("in", "out", "both"), default="both")
     parser.add_argument("--mass", type=float, nargs="*", help="override the mass grid (kg)")
     parser.add_argument("--friction", type=float, nargs="*", help="override the friction grid")
+    parser.add_argument("--shape", choices=("cube", "sphere"), default="cube")
     parser.add_argument("--grasp-model", help="residual Grasp checkpoint (best.zip)")
     parser.add_argument("--grasp-fallback", action="store_true",
                         help="run the IK Grasp after a failed learned Grasp")
@@ -109,14 +110,14 @@ def main():
         if args.region in ("out", "both"):
             grids.append(("out", OUT_OF_RANGE))
     seeds = range(args.seed, args.seed + args.episodes)
-    sim = PickPlaceSimulator()
+    sim = PickPlaceSimulator(shape=args.shape)
     try:
         for region, grid in grids:
             for mass, friction in itertools.product(grid["mass"], grid["friction"]):
                 started = time.perf_counter()
                 rows = run_condition(sim, mass, friction, seeds, grasp_options)
                 summary = summarize(rows, mass, friction, region, controller)
-                summary["seconds"] = time.perf_counter() - started
+                summary.update(seconds=time.perf_counter() - started, shape=args.shape)
                 print(json.dumps(summary), file=sys.stderr, flush=True)
     finally:
         sim.close()

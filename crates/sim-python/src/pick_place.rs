@@ -3,7 +3,9 @@
 use crate::{boundary, worker::Worker};
 use mujoco_runtime::{
     Error, JointCommand,
-    pick_place::{GRIPPER, ObjectRandomization, PickPlaceConfig, PickPlaceSim, PickPlaceState},
+    pick_place::{
+        GRIPPER, ObjectRandomization, ObjectShape, PickPlaceConfig, PickPlaceSim, PickPlaceState,
+    },
     presets,
     skills::{
         self, CONTROL_PERIOD, Criteria, EpisodeReport, ScriptedGrasp, ScriptedPlace,
@@ -120,8 +122,18 @@ pub(crate) struct PickPlaceSimulator {
 #[pymethods]
 impl PickPlaceSimulator {
     #[new]
-    #[pyo3(signature = (model_dir=None, *, robot=None))]
-    fn new(py: Python<'_>, model_dir: Option<PathBuf>, robot: Option<&str>) -> PyResult<Self> {
+    #[pyo3(signature = (model_dir=None, *, robot=None, shape="cube"))]
+    fn new(
+        py: Python<'_>,
+        model_dir: Option<PathBuf>,
+        robot: Option<&str>,
+        shape: &str,
+    ) -> PyResult<Self> {
+        let shape = match shape {
+            "cube" => ObjectShape::Cube,
+            "sphere" => ObjectShape::Sphere,
+            _ => return Err(PyValueError::new_err("shape must be cube or sphere")),
+        };
         if model_dir.is_some() && robot.is_some() {
             return Err(PyValueError::new_err(
                 "model_dir and robot are mutually exclusive",
@@ -141,7 +153,13 @@ impl PickPlaceSimulator {
                         None => presets::robot(&robot)?,
                     };
                     Ok(Session {
-                        sim: PickPlaceSim::from_spec(spec, PickPlaceConfig::default())?,
+                        sim: PickPlaceSim::from_spec(
+                            spec,
+                            PickPlaceConfig {
+                                shape,
+                                ..PickPlaceConfig::default()
+                            },
+                        )?,
                         active: None,
                     })
                 })
@@ -225,6 +243,15 @@ impl PickPlaceSimulator {
                 .iter()
                 .map(|a| a.joint.clone())
                 .collect())
+        })
+    }
+    /// Object geometry: "cube" or "sphere" (fixed at construction).
+    fn shape(&self, py: Python<'_>) -> PyResult<&'static str> {
+        self.session(py, |s| {
+            Ok(match s.sim.config().shape {
+                ObjectShape::Cube => "cube",
+                ObjectShape::Sphere => "sphere",
+            })
         })
     }
     fn timestep(&self, py: Python<'_>) -> PyResult<f64> {
@@ -479,7 +506,7 @@ mod tests {
     fn panic_poisons_pick_place_worker() {
         Python::initialize();
         Python::attach(|py| {
-            let sim = PickPlaceSimulator::new(py, None, None).unwrap();
+            let sim = PickPlaceSimulator::new(py, None, None, "cube").unwrap();
             let error = sim
                 .session::<()>(py, |_| panic!("injected pick-place failure"))
                 .unwrap_err();
@@ -493,7 +520,7 @@ mod tests {
     fn pick_place_wait_releases_gil() {
         Python::initialize();
         Python::attach(|py| {
-            let sim = PickPlaceSimulator::new(py, None, None).unwrap();
+            let sim = PickPlaceSimulator::new(py, None, None, "cube").unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             let other = std::thread::spawn(move || Python::attach(|_| tx.send(()).unwrap()));
             sim.session(py, move |_| {

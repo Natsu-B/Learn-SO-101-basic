@@ -27,6 +27,37 @@ pub struct PickPlaceConfig {
     pub lift_height: f64,
     /// Per-episode object mass/friction sampling; disabled by default.
     pub object_randomization: ObjectRandomization,
+    /// Object geometry. `cube_half` is its rest height (half edge or radius).
+    pub shape: ObjectShape,
+}
+
+/// Object geometry swapped into the scene at load time; same body, joint,
+/// mass, friction and contact settings, so only the shape changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ObjectShape {
+    #[default]
+    Cube,
+    /// Sphere whose diameter equals the cube edge (radius = `cube_half`).
+    Sphere,
+}
+impl ObjectShape {
+    const CUBE_GEOM: &str = r#"type="box" size="0.0125 0.0125 0.0125""#;
+    fn scene(self, half: f64) -> Result<String> {
+        if !SCENE_TEMPLATE.contains(Self::CUBE_GEOM) {
+            return Err(Error::Model("scene cube geom not found".into()));
+        }
+        Ok(match self {
+            Self::Cube if half == 0.0125 => SCENE_TEMPLATE.to_owned(),
+            Self::Cube => SCENE_TEMPLATE.replace(
+                Self::CUBE_GEOM,
+                &format!(r#"type="box" size="{half} {half} {half}""#),
+            ),
+            Self::Sphere => {
+                SCENE_TEMPLATE.replace(Self::CUBE_GEOM, &format!(r#"type="sphere" size="{half}""#))
+            }
+        })
+    }
 }
 impl Default for PickPlaceConfig {
     fn default() -> Self {
@@ -39,6 +70,7 @@ impl Default for PickPlaceConfig {
             place_tolerance: 0.02,
             lift_height: 0.03,
             object_randomization: ObjectRandomization::default(),
+            shape: ObjectShape::Cube,
         }
     }
 }
@@ -217,7 +249,13 @@ impl PickPlaceSim {
     }
     /// Load the pick-and-place scene with an explicitly resolved SO-101 model.
     pub fn from_spec(spec: robotics_core::RobotSpec, config: PickPlaceConfig) -> Result<Self> {
-        let sim = Simulator::from_spec_with_scene(spec, SCENE_TEMPLATE)?;
+        if !(config.cube_half.is_finite() && (0.005..=0.03).contains(&config.cube_half)) {
+            return Err(Error::Input(
+                "object half size must be in [5, 30] mm".into(),
+            ));
+        }
+        let scene = config.shape.scene(config.cube_half)?;
+        let sim = Simulator::from_spec_with_scene(spec, &scene)?;
         let m = &sim.model;
         let missing = |what: &str| Error::Model(format!("pick-place scene is missing {what}"));
         let cube_joint = m

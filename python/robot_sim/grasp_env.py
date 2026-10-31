@@ -199,7 +199,7 @@ class GoalGraspEnv(gym.Env):
 
     def __init__(self, *, history=0, horizon=75, arm_scale=0.03, gripper_scale=0.35,
                  mass_range=(0.02, 0.05), friction_range=(0.8, 1.5), friction_sampling="uniform",
-                 action_penalty=0.05, slip_penalty=50.0, max_retries=3):
+                 action_penalty=0.05, slip_penalty=50.0, max_retries=3, shape="cube"):
         super().__init__()
         for name, value in (("arm_scale", arm_scale), ("gripper_scale", gripper_scale)):
             if not np.isfinite(value) or value < 0:
@@ -220,7 +220,7 @@ class GoalGraspEnv(gym.Env):
         self.mass_range = None if mass_range is None else tuple(mass_range)
         self.friction_range = None if friction_range is None else tuple(friction_range)
         self.friction_sampling = friction_sampling
-        self.sim = PickPlaceSimulator()
+        self.sim = PickPlaceSimulator(shape=shape)
         self.set_physics_ranges(self.mass_range, self.friction_range)
         self.bounds = np.asarray(self.sim.action_bounds(), np.float64)
         self.criteria = self.sim.criteria()

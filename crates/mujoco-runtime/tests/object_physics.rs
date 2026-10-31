@@ -163,3 +163,34 @@ fn released_cube_falls_and_settles_on_table() {
         assert!(s.cube_linear_velocity.iter().all(|v| v.abs() < 2e-2));
     }
 }
+
+#[test]
+fn sphere_scene_keeps_mass_and_rests_in_place() {
+    use mujoco_runtime::pick_place::ObjectShape;
+    let mut pp = PickPlaceSim::new(PickPlaceConfig {
+        shape: ObjectShape::Sphere,
+        ..Default::default()
+    })
+    .unwrap();
+    let p = pp.nominal_object_physics();
+    assert_eq!(p.mass, 0.03);
+    // Solid sphere: I = 2/5 m r^2 about every axis.
+    for i in p.inertia {
+        assert!((i - 0.4 * 0.03 * 0.0125f64.powi(2)).abs() < 1e-12);
+    }
+    pp.reset(3).unwrap();
+    let start = pp.cube_pose().0;
+    let hold = JointCommand {
+        position: pp.sim.state().position,
+    };
+    for _ in 0..60 {
+        pp.step(&hold, CONTROL_PERIOD).unwrap();
+    }
+    let s = pp.state();
+    let drift = (0..3)
+        .map(|i| (s.cube_position[i] - start[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    assert!(drift < 3e-4, "sphere drifted {drift} m");
+    assert!(s.contacts.table && !s.contacts.pinched());
+}

@@ -46,3 +46,16 @@ def test_ranges_apply_at_reset_and_are_seeded(sim):
 def test_invalid_ranges_raise(sim, kwargs):
     with pytest.raises(ValueError):
         sim.set_object_randomization(**kwargs)
+
+
+def test_sphere_shape_is_selectable_and_grasped_by_scripted_skill():
+    sim = PickPlaceSimulator(shape="sphere")
+    try:
+        assert sim.shape() == "sphere"
+        assert sim.object_physics()["mass"] == 0.03
+        sim.reset(3000000)
+        assert sim.run_skill("grasp")["success"]
+    finally:
+        sim.close()
+    with pytest.raises(ValueError):
+        PickPlaceSimulator(shape="torus")

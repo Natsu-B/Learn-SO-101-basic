@@ -100,6 +100,14 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
     its own skill and counts toward overall success. ``stabilize="best_effort"``
     proceeds after the time limit if the cube is still lifted.
 
+    ``place`` selects the scripted Place variant: "place", "place_level"
+    (rotate the hand about the closing axis so the cube is level at release),
+    "place_contact" (lower until the cube touches the table, then open) or
+    "place_level_contact", "place_gentle" (open only to 0.25 rad before
+    retreating) or "place_gentle_contact". ``settle_before_place`` runs the best-effort IK
+    Stabilize (stop at carry height, wait until still) between Transport and
+    Place, reported as its own "settle" skill that does not decide success.
+
     ``skill_end_states`` records height, speed, tilt, gripper angle and cube
     offset in the jaws after every attempted skill (true state, logs only).
 
@@ -113,6 +121,9 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
         raise ValueError("learned transport requires a model")
     if grasp not in ("learned", "scripted"):
         raise ValueError("grasp must be learned or scripted")
+    if place not in ("place", "place_level", "place_contact", "place_level_contact",
+                     "place_gentle", "place_gentle_contact"):
+        raise ValueError("unknown place variant")
     if grasp == "learned" and (grasp_model is None or grasp_config is None):
         raise ValueError("learned grasp requires grasp_model and grasp_config")
     if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or not 0 <= seed < 2**64:
@@ -148,6 +159,7 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
             return sim.skill_report()
 
         end_states = []
+        settle_report = None
         if grasp == "learned":
             reports.append(run_learned_grasp(sim, grasp_model, grasp_config, on_step=on_step))
             end_states.append(skill_end_state(sim, "grasp"))
@@ -196,8 +208,22 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                                     reason=None if success else
                                     ("dropped" if predicates["dropped"] else "timeout")))
             end_states.append(skill_end_state(sim, "transport"))
+            if reports[-1]["success"] and settle_before_place:
+                settle = scripted("stabilize_best_effort")
+                settle["name"] = "settle"
+                end_states.append(skill_end_state(sim, "settle"))
+                # A failed settle (drop) ends the chain; a successful one is
+                # logged separately so the Grasp/Transport/Place chain is unchanged.
+                if settle["success"]:
+                    settle_report = settle
+                else:
+                    reports.append(settle)
             if reports[-1]["success"]:
-                reports.append(scripted("place"))
+                report = scripted(place)
+                if place != "place":
+                    report["name"] = "place"
+                    report["variant"] = place
+                reports.append(report)
                 end_states.append(skill_end_state(sim, "place"))
 
         final = sim.state()
@@ -207,7 +233,7 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                         np.asarray(final["cube_pos"])[:2] - np.asarray(final["target"])[:2])),
                     success=bool(chain_succeeded(reports) and placed),
                     skills=reports, control_steps=sum(r["steps"] for r in reports),
-                    dropped=bool(dropped), skill_end_states=end_states)
+                    dropped=bool(dropped), skill_end_states=end_states, settle=settle_report)
     finally:
         if owns_sim:
             sim.close()

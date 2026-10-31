@@ -44,8 +44,19 @@ impl ActiveSkill {
                 }
                 Box::new(skill)
             }
-            "place" => {
+            "place"
+            | "place_level"
+            | "place_contact"
+            | "place_level_contact"
+            | "place_gentle"
+            | "place_gentle_contact" => {
                 let mut skill = ScriptedPlace::new(criteria);
+                skill.level = name.contains("level");
+                skill.release_on_contact = name.ends_with("contact");
+                if name.contains("gentle") {
+                    // Open just past the cube width so the jaws do not sweep it.
+                    skill.release_opening = 0.25;
+                }
                 if let Some(n) = max_steps {
                     skill.max_steps = n;
                 }
@@ -61,7 +72,7 @@ impl ActiveSkill {
             }
             _ => {
                 return Err(Error::Input(
-                    "skill must be grasp, stabilize, transport or place".into(),
+                    "skill must be grasp, stabilize, transport or place[_level][_contact]".into(),
                 ));
             }
         };

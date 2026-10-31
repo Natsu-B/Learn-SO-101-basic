@@ -105,6 +105,8 @@ struct Motion {
     ik_q: Vec<f64>,
     command: Vec<f64>,
     closing: Option<[f64; 3]>,
+    /// Approach axis target (fingers straight down unless a skill tilts it).
+    axis: [f64; 3],
     speed: f64,
     max_joint_step: f64,
 }
@@ -117,6 +119,7 @@ impl Motion {
             ik_q: command.clone(),
             command,
             closing,
+            axis: [0., 0., -1.],
             speed: 0.15,
             max_joint_step: 0.05,
         }
@@ -136,11 +139,9 @@ impl Motion {
                 *s += d * step / n;
             }
         }
-        let (q, _) = env.solve_ik(
-            &self.ik_q,
-            &IkTarget::top_down(self.setpoint, self.closing),
-            60,
-        )?;
+        let mut target = IkTarget::top_down(self.setpoint, self.closing);
+        target.axis = self.axis;
+        let (q, _) = env.solve_ik(&self.ik_q, &target, 60)?;
         self.ik_q = q.clone();
         let bounds = env.sim.action_bounds();
         for (i, (c, t)) in self.command.iter_mut().zip(&q).enumerate() {
@@ -158,6 +159,58 @@ impl Motion {
     /// Set point arrived and the measured pinch centre is close to it.
     fn arrived(&self, env: &PickPlaceSim, goal: [f64; 3], tolerance: f64) -> bool {
         self.setpoint == goal && norm(sub(env.state().gripper_position, goal)) <= tolerance
+    }
+}
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+/// Component of v perpendicular to the unit vector n.
+fn reject(v: [f64; 3], n: [f64; 3]) -> [f64; 3] {
+    let d = dot(v, n);
+    [v[0] - d * n[0], v[1] - d * n[1], v[2] - d * n[2]]
+}
+/// Rodrigues rotation of v about the unit axis k by angle a.
+fn rotate(v: [f64; 3], k: [f64; 3], a: f64) -> [f64; 3] {
+    let (s, c) = a.sin_cos();
+    let kxv = cross3(k, v);
+    let kv = dot(k, v);
+    std::array::from_fn(|i| v[i] * c + kxv[i] * s + k[i] * kv * (1. - c))
+}
+/// World direction of the cube face normal that points most upward.
+fn cube_up_axis(q: [f64; 4]) -> [f64; 3] {
+    let [w, x, y, z] = q;
+    let axes = [
+        [
+            1. - 2. * (y * y + z * z),
+            2. * (x * y + w * z),
+            2. * (x * z - w * y),
+        ],
+        [
+            2. * (x * y - w * z),
+            1. - 2. * (x * x + z * z),
+            2. * (y * z + w * x),
+        ],
+        [
+            2. * (x * z + w * y),
+            2. * (y * z - w * x),
+            1. - 2. * (x * x + y * y),
+        ],
+    ];
+    let best = axes
+        .iter()
+        .max_by(|a, b| a[2].abs().total_cmp(&b[2].abs()))
+        .unwrap();
+    if best[2] < 0. {
+        best.map(|v| -v)
+    } else {
+        *best
     }
 }
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -400,9 +453,21 @@ pub struct ScriptedPlace {
     phase_steps: usize,
     steps: usize,
     retreat_from: [f64; 3],
+    release_at: Option<[f64; 3]>,
+    /// Hand rotation (rad, about the jaw closing axis) applied while lowering.
+    level_angle: f64,
     pub max_steps: usize,
+    /// Rotate the hand about the jaw closing axis while lowering so the cube's
+    /// up face is level at release (compensates its tilt in the jaws).
+    pub level: bool,
+    /// Keep lowering until the cube touches the table, then open there.
+    pub release_on_contact: bool,
+    /// Gripper target while releasing and retreating (rad).
+    pub release_opening: f64,
 }
 impl ScriptedPlace {
+    /// Largest leveling rotation (rad); larger tilts are only partly corrected.
+    pub const MAX_LEVEL: f64 = 0.35;
     pub fn new(criteria: Criteria) -> Self {
         Self {
             criteria,
@@ -412,8 +477,17 @@ impl ScriptedPlace {
             phase_steps: 0,
             steps: 0,
             retreat_from: [0.; 3],
+            release_at: None,
+            level_angle: 0.,
             max_steps: 200,
+            level: false,
+            release_on_contact: false,
+            release_opening: GRIPPER_OPEN,
         }
+    }
+    /// Leveling rotation chosen at begin() (rad, about the closing axis).
+    pub fn level_angle(&self) -> f64 {
+        self.level_angle
     }
     fn next(&mut self, phase: PlacePhase) {
         self.phase = phase;
@@ -426,34 +500,61 @@ impl Skill for ScriptedPlace {
     }
     fn begin(&mut self, env: &PickPlaceSim) -> Result<()> {
         let s = env.state();
+        let mut motion = Motion::new(env, None);
         self.hold_offset = sub(s.cube_position, s.gripper_position);
-        self.motion = Some(Motion::new(env, None));
+        self.level_angle = 0.;
+        if self.level {
+            // Rotate hand and cube together about the closing axis c by the
+            // angle that brings the cube's most upward face normal to +z.
+            let c = env.closing_direction();
+            let up = cube_up_axis(s.cube_quat);
+            let (u, z) = (reject(up, c), reject([0., 0., 1.], c));
+            if norm(u) > 1e-6 && norm(z) > 1e-6 {
+                let angle = dot(cross3(u, z), c).atan2(dot(u, z));
+                self.level_angle = angle.clamp(-Self::MAX_LEVEL, Self::MAX_LEVEL);
+                motion.axis = rotate(s.gripper_axis, c, self.level_angle);
+                self.hold_offset = rotate(self.hold_offset, c, self.level_angle);
+            }
+        }
+        self.motion = Some(motion);
         self.phase = PlacePhase::Lower;
         self.phase_steps = 0;
         self.steps = 0;
+        self.release_at = None;
         Ok(())
     }
     fn act(&mut self, env: &PickPlaceSim) -> Result<JointCommand> {
         self.steps += 1;
         self.phase_steps += 1;
         let t = env.target();
-        // Release slightly above the table so the cube is not pushed into it.
-        let cube_goal = [t[0], t[1], env.config().cube_half + 0.002];
+        // Release slightly above the table so the cube is not pushed into it;
+        // with release_on_contact keep going down until it touches.
+        let clearance = if self.release_on_contact {
+            -0.004
+        } else {
+            0.002
+        };
+        let cube_goal = [t[0], t[1], env.config().cube_half + clearance];
         let goal = sub(cube_goal, self.hold_offset);
         let motion = self.motion.as_mut().expect("begin() first");
         Ok(match self.phase {
             PlacePhase::Lower => {
                 motion.speed = 0.06;
                 let c = motion.track(env, goal, GRIPPER_CLOSED)?;
-                if motion.arrived(env, goal, 0.004) || self.phase_steps > 90 {
+                let touched = self.release_on_contact && env.contacts().table;
+                if touched {
+                    self.release_at = Some(env.state().gripper_position);
+                }
+                if touched || motion.arrived(env, goal, 0.004) || self.phase_steps > 90 {
                     self.next(PlacePhase::Release);
                 }
                 c
             }
             PlacePhase::Release => {
-                let c = motion.track(env, goal, GRIPPER_OPEN)?;
+                let at = self.release_at.unwrap_or(goal);
+                let c = motion.track(env, at, self.release_opening)?;
                 if self.phase_steps >= 12 {
-                    self.retreat_from = goal;
+                    self.retreat_from = at;
                     self.next(PlacePhase::Retreat);
                 }
                 c
@@ -461,7 +562,7 @@ impl Skill for ScriptedPlace {
             PlacePhase::Retreat => {
                 motion.speed = 0.10;
                 let up = add(self.retreat_from, [0., 0., 0.06]);
-                let c = motion.track(env, up, GRIPPER_OPEN)?;
+                let c = motion.track(env, up, self.release_opening)?;
                 if motion.arrived(env, up, 0.01) || self.phase_steps > 45 {
                     self.next(PlacePhase::Settle);
                 }
@@ -469,7 +570,7 @@ impl Skill for ScriptedPlace {
             }
             PlacePhase::Settle => {
                 let up = add(self.retreat_from, [0., 0., 0.06]);
-                motion.track(env, up, GRIPPER_OPEN)?
+                motion.track(env, up, self.release_opening)?
             }
         })
     }

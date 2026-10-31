@@ -8,9 +8,48 @@ from ._native import CONTROL_PERIOD, GRIPPER_CLOSED, PickPlaceSimulator
 from .transport_env import transport_command, transport_observation
 
 
+def run_learned_grasp(sim, model, config, *, on_step=None):
+    """Scripted approach (IK) to the pre-close state, then the residual policy.
+
+    Uses the same ResidualGrasp core as GoalGraspEnv, without reset or retry.
+    Returns a skill report; ``learned`` is True only if the policy acted.
+    """
+    from .grasp_env import ResidualGrasp, approach_to_pre_close
+
+    approach_steps = 0
+
+    def count(state, name, learned):
+        nonlocal approach_steps
+        approach_steps += 1
+        if on_step is not None:
+            on_step(state, name, learned)
+
+    if not approach_to_pre_close(sim, count):
+        report = sim.skill_report()
+        return dict(name="grasp", learned=False, success=False, status="failure",
+                    steps=approach_steps, reason=f"approach: {report['reason']}",
+                    approach_steps=approach_steps, max_slip_m=0.0)
+    episode = ResidualGrasp(sim, history=config["history"], horizon=config["horizon"],
+                            arm_scale=config["arm_scale"], gripper_scale=config["gripper_scale"],
+                            criteria=sim.criteria(),
+                            bounds=np.asarray(sim.action_bounds(), np.float64))
+    while not episode.done:
+        action, _ = model.predict(episode.obs, deterministic=True)
+        episode.step(action)
+        if on_step is not None:
+            on_step(episode.state, "grasp", True)
+    t = episode.tracker
+    return dict(name="grasp", learned=True, success=bool(t.success),
+                status="success" if t.success else "failure",
+                steps=approach_steps + episode.step_count,
+                reason=None if t.success else ("dropped" if t.dropped else "not held"),
+                approach_steps=approach_steps, max_slip_m=t.max_slip)
+
+
 def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                            max_transport_steps=150, max_delta=0.05, rate_limit=0.1,
-                           on_step=None):
+                           on_step=None, grasp="scripted", grasp_model=None, grasp_config=None,
+                           grasp_fallback=False):
     """Run one native seed and return an EpisodeReport-compatible dictionary.
 
     ``model`` is a loaded SAC policy with ``predict(obs, deterministic=True)``.
@@ -20,6 +59,11 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
     all three skills. A supplied simulator remains open; otherwise it is owned
     here and closed even if inference or the callback raises.
 
+    ``grasp="learned"`` runs the residual Grasp policy (``grasp_model`` with its
+    checkpoint ``grasp_config``). With ``grasp_fallback`` a failed learned
+    Grasp is followed by a fresh scripted Grasp from the resulting state (no
+    reset); both attempts are reported and the fallback is ``learned=False``.
+
     As in Rust, only attempted skills appear in the report. ``dropped`` records
     Rust's dropped predicate during Transport: the initial table state and the
     intentional release during Place are not accidental drops.
@@ -28,6 +72,10 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
         raise ValueError("transport must be learned or scripted")
     if transport == "learned" and model is None:
         raise ValueError("learned transport requires a model")
+    if grasp not in ("learned", "scripted"):
+        raise ValueError("grasp must be learned or scripted")
+    if grasp == "learned" and (grasp_model is None or grasp_config is None):
+        raise ValueError("learned grasp requires grasp_model and grasp_config")
     if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or not 0 <= seed < 2**64:
         raise ValueError("seed must be an integer in [0, 2**64)")
     if (isinstance(max_transport_steps, bool)
@@ -60,7 +108,14 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                     on_step(sim.state(), name, False)
             return sim.skill_report()
 
-        reports.append(scripted("grasp"))
+        if grasp == "learned":
+            reports.append(run_learned_grasp(sim, grasp_model, grasp_config, on_step=on_step))
+            if not reports[-1]["success"] and grasp_fallback:
+                fallback = scripted("grasp")
+                fallback["fallback"] = True
+                reports.append(fallback)
+        else:
+            reports.append(scripted("grasp"))
         if reports[-1]["success"]:
             if transport == "scripted":
                 reports.append(scripted("transport"))
@@ -100,8 +155,8 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
         return dict(seed=int(seed), cube_initial=initial["cube_pos"], target=final["target"],
                     cube_final=final["cube_pos"], final_xy_error=float(np.linalg.norm(
                         np.asarray(final["cube_pos"])[:2] - np.asarray(final["target"])[:2])),
-                    success=bool(len(reports) == 3 and all(r["success"] for r in reports)
-                                 and placed),
+                    success=bool([r["name"] for r in reports][-3:] == ["grasp", "transport", "place"]
+                                 and all(r["success"] for r in reports[-3:]) and placed),
                     skills=reports, control_steps=sum(r["steps"] for r in reports),
                     dropped=bool(dropped))
     finally:

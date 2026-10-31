@@ -95,6 +95,14 @@ pub trait Skill {
     fn begin(&mut self, env: &PickPlaceSim) -> Result<()>;
     fn act(&mut self, env: &PickPlaceSim) -> Result<JointCommand>;
     fn status(&self, env: &PickPlaceSim) -> SkillStatus;
+    /// Online adjustment of a scripted skill's internal targets (used by
+    /// low-dimensional residual policies). Skills without one reject it.
+    fn adjust(&mut self, _values: &[f64]) -> Result<()> {
+        Err(robotics_core::Error::Input(format!(
+            "skill {} has no adjustments",
+            self.name()
+        )))
+    }
 }
 
 /// Shared Cartesian motion helper: a speed-limited set point, warm-started IK,
@@ -263,8 +271,14 @@ pub struct ScriptedGrasp {
     pub jaw_clearance: f64,
     pub carry_height: f64,
     pub max_steps: usize,
+    /// Horizontal offset of the lift target along the jaw closing direction
+    /// (metres) and scale of the lift speed; set through `Skill::adjust`.
+    pub lift_offset: f64,
+    pub lift_speed_scale: f64,
 }
 impl ScriptedGrasp {
+    pub const MAX_LIFT_OFFSET: f64 = 0.02;
+    pub const LIFT_SPEED_SCALE: [f64; 2] = [0.3, 2.0];
     pub fn new(criteria: Criteria) -> Self {
         Self {
             criteria,
@@ -279,6 +293,8 @@ impl ScriptedGrasp {
             jaw_clearance: 0.004,
             carry_height: 0.08,
             max_steps: 300,
+            lift_offset: 0.,
+            lift_speed_scale: 1.,
         }
     }
     fn next(&mut self, phase: GraspPhase) {
@@ -319,7 +335,13 @@ impl Skill for ScriptedGrasp {
         // moving jaw then pushes the cube against the fixed jaw while closing.
         let cube = add(self.cube_start, self.clearance);
         let above = add(cube, [0., 0., self.approach_height]);
-        let lifted = [cube[0], cube[1], env.config().cube_half + self.carry_height];
+        let mut lifted = [cube[0], cube[1], env.config().cube_half + self.carry_height];
+        if self.lift_offset != 0. {
+            let z = env.closing_direction();
+            let h = z[0].hypot(z[1]).max(1e-9);
+            lifted[0] += self.lift_offset * z[0] / h;
+            lifted[1] += self.lift_offset * z[1] / h;
+        }
         let motion = self.motion.as_mut().expect("begin() first");
         let command = match self.phase {
             GraspPhase::Approach => {
@@ -354,7 +376,7 @@ impl Skill for ScriptedGrasp {
                 c
             }
             GraspPhase::Lift => {
-                motion.speed = 0.10;
+                motion.speed = 0.10 * self.lift_speed_scale;
                 let c = motion.track(env, lifted, GRIPPER_CLOSED)?;
                 if motion.arrived(env, lifted, 0.01) || self.phase_steps > 60 {
                     self.next(GraspPhase::Hold);
@@ -369,6 +391,25 @@ impl Skill for ScriptedGrasp {
             self.held = 0.;
         }
         Ok(command)
+    }
+    /// [lift offset along the closing direction (m), lift speed scale].
+    fn adjust(&mut self, values: &[f64]) -> Result<()> {
+        let [offset, speed] = values else {
+            return Err(robotics_core::Error::Input(
+                "grasp adjustment is [lift_offset_m, lift_speed_scale]".into(),
+            ));
+        };
+        let [lo, hi] = Self::LIFT_SPEED_SCALE;
+        if !(offset.is_finite() && offset.abs() <= Self::MAX_LIFT_OFFSET)
+            || !(speed.is_finite() && (lo..=hi).contains(speed))
+        {
+            return Err(robotics_core::Error::Input(
+                "grasp adjustment out of range".into(),
+            ));
+        }
+        self.lift_offset = *offset;
+        self.lift_speed_scale = *speed;
+        Ok(())
     }
     fn status(&self, env: &PickPlaceSim) -> SkillStatus {
         if self.held >= self.criteria.hold_seconds && predicates::lifted(env, &self.criteria) {

@@ -421,6 +421,18 @@ impl PickPlaceSimulator {
                 .phase())
         })
     }
+    /// Adjust the active scripted skill's internal targets for its next
+    /// commands (Grasp: [lift offset along the closing direction in m, lift
+    /// speed scale]). Used by low-dimensional residual policies.
+    fn skill_adjust(&self, py: Python<'_>, values: Vec<f64>) -> PyResult<()> {
+        self.session(py, move |s| {
+            let active = s
+                .active
+                .as_mut()
+                .ok_or_else(|| Error::Input("no active skill".into()))?;
+            active.skill.adjust(&values)
+        })
+    }
     /// The active skill's next command without stepping physics. Each call
     /// advances the skill's internal set point; follow it with skill_apply().
     fn skill_act(&self, py: Python<'_>) -> PyResult<Vec<f64>> {

@@ -98,7 +98,9 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
                 friction_sampling="log", tilt_penalty=0.0, reward="v1",
                 eval_interval=5000, eval_episodes=6, eval_seed=4000000,
                 buffer_size=200000, batch_size=256, learning_rate=3e-4,
-                train_freq=8, gradient_steps=4, learning_starts=1000):
+                train_freq=8, gradient_steps=4, learning_starts=1000,
+                action_mode="joint6", base_wrist=0.0, wrist_scale=0.1, lift_scale=0.01,
+                speed_scale=0.5, contact_model="legacy", floor_friction=None):
     import torch
     import stable_baselines3
     from stable_baselines3 import SAC
@@ -115,6 +117,13 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
                       friction_range=list(friction_range), friction_sampling=friction_sampling)
     if tilt_penalty:
         env_config["tilt_penalty"] = tilt_penalty
+    if action_mode != "joint6":
+        # Low-dimensional residual around IK + a fixed wrist_roll offset.
+        env_config.update(action_mode=action_mode, base_wrist=base_wrist,
+                          wrist_scale=wrist_scale, lift_scale=lift_scale,
+                          speed_scale=speed_scale)
+    if contact_model != "legacy":
+        env_config.update(contact_model=contact_model, floor_friction=floor_friction)
     if reward != "v1":
         # v3: run to the base skill's own Hold, reward stable hand-off and the
         # downstream IK pick-and-place; select checkpoints by full success.
@@ -123,7 +132,9 @@ def train_grasp(output, *, steps=60000, seed=42, history=0, horizon=75, arm_scal
                   stable_baselines3_version=stable_baselines3.__version__, env=env_config,
                   hidden_physics="mass and friction randomized at reset; not observed",
                   base_controller="scripted IK Grasp (Close/Lift/Hold) proposes a_IK each step",
-                  action="a_IK + [arm_scale*a[0:5], gripper_scale*a[5]], clipped to bounds",
+                  action=("a_IK + [arm_scale*a[0:5], gripper_scale*a[5]], clipped to bounds"
+                          if action_mode == "joint6" else
+                          "a_IK + base_wrist + wrist_scale*a[0] on wrist_roll; wrist_lift adds a lift offset lift_scale*a[1] along the closing axis and lift speed 1+speed_scale*a[2] (Rust adjust)"),
                   success="Rust lifted predicate held for hold_seconds",
                   sac=dict(buffer_size=buffer_size, batch_size=batch_size,
                            learning_rate=learning_rate, gamma=0.98, tau=0.005,

@@ -195,9 +195,9 @@ class ResidualGrasp:
         """Apply a_IK + residual; returns (predicates, terminated, truncated)."""
         if self.done:
             raise RuntimeError("residual grasp episode has ended")
-        command = residual_command(self.base, action, self.bounds, arm_scale=self.arm_scale,
-                                   gripper_scale=self.gripper_scale)
+        command = self._command(action)
         self.state = self.sim.skill_apply(command.tolist())
+        self._adjust(action)
         self.step_count += 1
         predicates = self.sim.predicates()
         t = self.tracker.update(self.state, predicates)
@@ -219,6 +219,13 @@ class ResidualGrasp:
         self.obs = self.history.push(action, self._observation(base))
         return predicates, terminated, truncated
 
+    def _command(self, action):
+        return residual_command(self.base, action, self.bounds, arm_scale=self.arm_scale,
+                                gripper_scale=self.gripper_scale)
+
+    def _adjust(self, action):
+        """Change the scripted skill's targets before its next proposal."""
+
     @property
     def success(self):
         """Grasp success for the hand-off: the 0.3 s lift was achieved, nothing
@@ -229,6 +236,71 @@ class ResidualGrasp:
         return bool(t.ever_success and not t.dropped and self.predicates["lifted"])
 
 
+# Low-dimensional residual modes: number of policy outputs.
+LOW_DIM_MODES = {"wrist": 1, "wrist_lift": 3}
+
+
+class LowDimResidualGrasp(ResidualGrasp):
+    """Residual on top of the IK Grasp plus a fixed wrist_roll offset.
+
+    a[0] -> wrist_roll = base_wrist + wrist_scale * a[0] (rad, added to a_IK).
+    With mode "wrist_lift" also a[1] -> lift target shifted by lift_scale * a[1]
+    (m) along the jaw closing direction and a[2] -> lift speed scaled by
+    1 + speed_scale * a[2]; both set the Rust Grasp's targets for its next
+    proposals (Skill::adjust). The gripper keeps the IK command: it is at its
+    force limit, so a gripper residual has no authority."""
+
+    def __init__(self, sim, *, mode, base_wrist, wrist_scale, lift_scale=0.01,
+                 speed_scale=0.5, **kwargs):
+        if mode not in LOW_DIM_MODES:
+            raise ValueError(f"mode must be one of {sorted(LOW_DIM_MODES)}")
+        if kwargs.get("history"):
+            raise ValueError("low-dimensional residuals use history 0")
+        self.mode = mode
+        self.base_wrist = float(base_wrist)
+        self.wrist_scale = float(wrist_scale)
+        self.lift_scale = float(lift_scale)
+        self.speed_scale = float(speed_scale)
+        super().__init__(sim, **kwargs)
+
+    def _command(self, action):
+        action = np.asarray(action, np.float64)
+        if (action.shape != (LOW_DIM_MODES[self.mode],) or not np.isfinite(action).all()
+                or np.any(np.abs(action) > 1)):
+            raise ValueError("expected finite normalized low-dimensional action in [-1,1]")
+        command = np.asarray(self.base, np.float64).copy()
+        command[4] += self.base_wrist + self.wrist_scale * action[0]
+        return np.clip(command, self.bounds[:, 0], self.bounds[:, 1])
+
+    def _adjust(self, action):
+        if self.mode != "wrist_lift" or self.sim.skill_report()["status"] != "running":
+            return
+        offset, speed = self.adjustment(action)
+        self.sim.skill_adjust([offset, speed])
+
+    def adjustment(self, action):
+        """The (lift offset m, speed scale) an action requests, or None."""
+        if self.mode != "wrist_lift":
+            return None
+        return self.lift_scale * float(action[1]), 1.0 + self.speed_scale * float(action[2])
+
+
+def residual_episode(sim, config, *, criteria, bounds):
+    """Build the residual Grasp episode a checkpoint's env config describes
+    (shared by GoalGraspEnv and pipeline inference)."""
+    end_at = config.get("end_at") or ("base" if config.get("reward") == "v3" else "success")
+    common = dict(history=config["history"], horizon=config["horizon"],
+                  arm_scale=config["arm_scale"], gripper_scale=config["gripper_scale"],
+                  criteria=criteria, bounds=bounds, end_at=end_at)
+    mode = config.get("action_mode", "joint6")
+    if mode == "joint6":
+        return ResidualGrasp(sim, **common)
+    return LowDimResidualGrasp(sim, mode=mode, base_wrist=config["base_wrist"],
+                               wrist_scale=config["wrist_scale"],
+                               lift_scale=config.get("lift_scale", 0.01),
+                               speed_scale=config.get("speed_scale", 0.5), **common)
+
+
 class GoalGraspEnv(gym.Env):
     metadata = {"render_modes": []}
     # Scripted Grasp carry height (skills.rs ScriptedGrasp::carry_height).
@@ -237,7 +309,9 @@ class GoalGraspEnv(gym.Env):
     def __init__(self, *, history=0, horizon=75, arm_scale=0.03, gripper_scale=0.35,
                  mass_range=(0.02, 0.05), friction_range=(0.8, 1.5), friction_sampling="uniform",
                  action_penalty=0.05, slip_penalty=50.0, tilt_penalty=0.0, max_retries=3,
-                 shape="cube", reward="v1", end_at=None, downstream=False):
+                 shape="cube", reward="v1", end_at=None, downstream=False,
+                 action_mode="joint6", base_wrist=0.0, wrist_scale=0.1, lift_scale=0.01,
+                 speed_scale=0.5, contact_model="legacy", floor_friction=None):
         super().__init__()
         for name, value in (("arm_scale", arm_scale), ("gripper_scale", gripper_scale)):
             if not np.isfinite(value) or value < 0:
@@ -268,11 +342,25 @@ class GoalGraspEnv(gym.Env):
         self.mass_range = None if mass_range is None else tuple(mass_range)
         self.friction_range = None if friction_range is None else tuple(friction_range)
         self.friction_sampling = friction_sampling
-        self.sim = PickPlaceSimulator(shape=shape)
+        if action_mode != "joint6" and action_mode not in LOW_DIM_MODES:
+            raise ValueError("unknown action_mode")
+        self.action_mode = action_mode
+        self.low_dim = dict(base_wrist=float(base_wrist), wrist_scale=float(wrist_scale),
+                            lift_scale=float(lift_scale), speed_scale=float(speed_scale))
+        # pairwise: friction_range is the jaw friction; floor_friction "same"
+        # gives the table the same value, None keeps the scene's 1.2.
+        if floor_friction not in (None, "same"):
+            raise ValueError("floor_friction must be None or 'same'")
+        if floor_friction == "same" and contact_model != "pairwise":
+            raise ValueError("floor_friction='same' needs contact_model='pairwise'")
+        self.contact_model = contact_model
+        self.floor_friction = floor_friction
+        self.sim = PickPlaceSimulator(shape=shape, contact_model=contact_model)
         self.set_physics_ranges(self.mass_range, self.friction_range)
         self.bounds = np.asarray(self.sim.action_bounds(), np.float64)
         self.criteria = self.sim.criteria()
-        self.action_space = gym.spaces.Box(-1., 1., (ACTION_DIM,), np.float32)
+        dim = ACTION_DIM if action_mode == "joint6" else LOW_DIM_MODES[action_mode]
+        self.action_space = gym.spaces.Box(-1., 1., (dim,), np.float32)
         self.observation_space = gym.spaces.Box(
             -np.inf, np.inf, (ObservationHistory(history).size,), np.float32)
         self._needs_reset = True
@@ -280,7 +368,8 @@ class GoalGraspEnv(gym.Env):
     def set_physics_ranges(self, mass, friction):
         """Hidden-physics ranges for later resets (evaluation fixes them)."""
         self.mass_range, self.friction_range = mass, friction
-        self.sim.set_object_randomization(mass=mass, friction=friction)
+        floor = dict(floor_friction=friction) if self.floor_friction == "same" else {}
+        self.sim.set_object_randomization(mass=mass, friction=friction, **floor)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -291,14 +380,16 @@ class GoalGraspEnv(gym.Env):
             # value goes to Rust as a fixed range and never into the observation.
             lo, hi = np.log(self.friction_range)
             mu = float(np.exp(self.np_random.uniform(lo, hi)))
-            self.sim.set_object_randomization(mass=self.mass_range, friction=(mu, mu))
+            floor = dict(floor_friction=(mu, mu)) if self.floor_friction == "same" else {}
+            self.sim.set_object_randomization(mass=self.mass_range, friction=(mu, mu), **floor)
         self.episode_seed, self.retries = start_pre_close(self.sim, requested,
                                                           max_retries=self.max_retries)
         self.requested_seed = requested
-        self.episode = ResidualGrasp(self.sim, history=self.history_length, horizon=self.horizon,
-                                     arm_scale=self.arm_scale, gripper_scale=self.gripper_scale,
-                                     criteria=self.criteria, bounds=self.bounds,
-                                     end_at=self.end_at)
+        config = dict(history=self.history_length, horizon=self.horizon,
+                      arm_scale=self.arm_scale, gripper_scale=self.gripper_scale,
+                      end_at=self.end_at, action_mode=self.action_mode, **self.low_dim)
+        self.episode = residual_episode(self.sim, config, criteria=self.criteria,
+                                        bounds=self.bounds)
         self.downstream_result = None
         self._potential = 0.0
         self._needs_reset = False

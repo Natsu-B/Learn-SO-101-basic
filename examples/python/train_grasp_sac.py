@@ -1,7 +1,10 @@
 """Train the residual Grasp with SAC under randomized, unobserved object physics.
 
 Model A: --history 0 (current observation). Model B: --history K (K past
-observation/action frames stacked). Checkpoints: best.zip, latest.zip, final.zip.
+observation/action frames stacked). Low-dimensional residuals around IK + a
+fixed wrist_roll offset: --action-mode wrist (1-D) or wrist_lift (3-D: wrist,
+lift offset along the closing axis, lift speed). Checkpoints: best.zip,
+latest.zip, final.zip.
 """
 import argparse
 import json
@@ -26,6 +29,15 @@ def main():
     p.add_argument("--reward", choices=("v1", "v3"), default="v1",
                    help="v3: lift progress, stable hand-off, downstream IK pick-and-place; "
                         "checkpoints selected by full success")
+    p.add_argument("--action-mode", choices=("joint6", "wrist", "wrist_lift"), default="joint6")
+    p.add_argument("--base-wrist", type=float, default=0.0,
+                   help="fixed wrist_roll offset (rad) the low-dimensional residual adds to")
+    p.add_argument("--wrist-scale", type=float, default=0.1)
+    p.add_argument("--lift-scale", type=float, default=0.01)
+    p.add_argument("--speed-scale", type=float, default=0.5)
+    p.add_argument("--contact-model", choices=("legacy", "pairwise"), default="legacy")
+    p.add_argument("--floor-friction", choices=("nominal", "same"), default="nominal",
+                   help="pairwise table friction: scene value or equal to the jaw friction")
     p.add_argument("--eval-interval", type=int, default=5000)
     p.add_argument("--eval-episodes", type=int, default=6)
     a = p.parse_args()
@@ -35,7 +47,11 @@ def main():
                           friction_range=a.friction_range,
                           friction_sampling=a.friction_sampling,
                           tilt_penalty=a.tilt_penalty, reward=a.reward, eval_interval=a.eval_interval,
-                          eval_episodes=a.eval_episodes)
+                          eval_episodes=a.eval_episodes, action_mode=a.action_mode,
+                          base_wrist=a.base_wrist, wrist_scale=a.wrist_scale,
+                          lift_scale=a.lift_scale, speed_scale=a.speed_scale,
+                          contact_model=a.contact_model,
+                          floor_friction=None if a.floor_friction == "nominal" else "same")
     print(json.dumps(summary))
 
 

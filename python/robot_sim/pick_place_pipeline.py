@@ -43,7 +43,7 @@ def run_learned_grasp(sim, model, config, *, on_step=None):
     Returns a skill report; ``learned`` is True only if a learned policy acted
     (a model with ``learned = False``, such as a fixed residual, reports False).
     """
-    from .grasp_env import ResidualGrasp, approach_to_pre_close
+    from .grasp_env import approach_to_pre_close, residual_episode
 
     approach_steps = 0
 
@@ -58,12 +58,8 @@ def run_learned_grasp(sim, model, config, *, on_step=None):
         return dict(name="grasp", learned=False, success=False, status="failure",
                     steps=approach_steps, reason=f"approach: {report['reason']}",
                     approach_steps=approach_steps, max_slip_m=0.0)
-    episode = ResidualGrasp(sim, history=config["history"], horizon=config["horizon"],
-                            arm_scale=config["arm_scale"], gripper_scale=config["gripper_scale"],
-                            criteria=sim.criteria(),
-                            bounds=np.asarray(sim.action_bounds(), np.float64),
-                            end_at=config.get("end_at") or (
-                                "base" if config.get("reward") == "v3" else "success"))
+    episode = residual_episode(sim, config, criteria=sim.criteria(),
+                               bounds=np.asarray(sim.action_bounds(), np.float64))
     while not episode.done:
         action, _ = model.predict(episode.obs, deterministic=True)
         episode.step(action)
@@ -81,7 +77,8 @@ def run_learned_grasp(sim, model, config, *, on_step=None):
 def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
                            max_transport_steps=150, max_delta=0.05, rate_limit=0.1,
                            on_step=None, grasp="scripted", grasp_model=None, grasp_config=None,
-                           grasp_fallback=False, stabilize=False):
+                           grasp_fallback=False, stabilize=False, place="place",
+                           settle_before_place=False):
     """Run one native seed and return an EpisodeReport-compatible dictionary.
 
     ``model`` is a loaded SAC policy with ``predict(obs, deterministic=True)``.

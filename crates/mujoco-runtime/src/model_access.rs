@@ -140,3 +140,100 @@ pub(crate) fn max_geom_priority(model: &mj::mjModel) -> i32 {
     // SAFETY: read-only scan of a live model.
     unsafe { robot_sim_max_geom_priority(&**model) }
 }
+
+unsafe extern "C" {
+    fn robot_sim_read_geom_contact(
+        model: *const mj::bindgen::mjModel,
+        geom: i32,
+        out: *mut f64,
+    ) -> i32;
+    fn robot_sim_write_geom_contact(
+        model: *mut mj::bindgen::mjModel,
+        geom: i32,
+        values: *const f64,
+    ) -> i32;
+    fn robot_sim_geom_name(
+        model: *const mj::bindgen::mjModel,
+        geom: i32,
+    ) -> *const std::ffi::c_char;
+    fn robot_sim_read_option(model: *const mj::bindgen::mjModel, out: *mut f64);
+    fn robot_sim_geom_contacts(
+        model: *const mj::bindgen::mjModel,
+        data: *const mj::bindgen::mjData,
+        geom: i32,
+        out: *mut f64,
+        max: i32,
+    ) -> i32;
+}
+/// friction[3], condim, solref[2], priority of one geom.
+pub(crate) fn geom_contact(
+    model: &mj::mjModel,
+    geom: ObjectId<obj::Geom>,
+) -> robotics_core::Result<[f64; 7]> {
+    let mut out = [0.; 7];
+    // SAFETY: live model, seven-element buffer, C bounds check; read-only.
+    let ok =
+        unsafe { robot_sim_read_geom_contact(&**model, geom.index() as i32, out.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(robotics_core::Error::Model("invalid geom".into()));
+    }
+    Ok(out)
+}
+pub(crate) fn set_geom_contact(
+    model: &mut mj::mjModel,
+    geom: ObjectId<obj::Geom>,
+    values: &[f64; 7],
+) -> robotics_core::Result<()> {
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err(robotics_core::Error::Input(
+            "nonfinite contact parameter".into(),
+        ));
+    }
+    // SAFETY: exclusive model access; only per-geom contact values change.
+    let ok =
+        unsafe { robot_sim_write_geom_contact(&mut **model, geom.index() as i32, values.as_ptr()) };
+    if ok == 0 {
+        return Err(robotics_core::Error::Input(
+            "invalid geom contact parameters".into(),
+        ));
+    }
+    Ok(())
+}
+/// Geom name, or "" for an unnamed geom.
+pub(crate) fn geom_name(model: &mj::mjModel, geom: usize) -> String {
+    // SAFETY: the C helper bounds-checks and never returns NULL; the string is
+    // owned by the model and copied before the borrow ends.
+    unsafe { std::ffi::CStr::from_ptr(robot_sim_geom_name(&**model, geom as i32)) }
+        .to_string_lossy()
+        .into_owned()
+}
+/// timestep, integrator, solver, iterations, ls_iterations, cone, impratio,
+/// noslip_iterations, tolerance, override flag.
+pub(crate) fn solver_option(model: &mj::mjModel) -> [f64; 10] {
+    let mut out = [0.; 10];
+    // SAFETY: read-only, ten-element buffer.
+    unsafe { robot_sim_read_option(&**model, out.as_mut_ptr()) };
+    out
+}
+pub(crate) const CONTACT_FIELDS: usize = 27;
+/// Raw contact rows of one geom (see model_access.c for the layout).
+pub(crate) fn geom_contacts(
+    model: &mj::mjModel,
+    data: &mj::mjData,
+    geom: ObjectId<obj::Geom>,
+) -> Vec<[f64; CONTACT_FIELDS]> {
+    const MAX: usize = 64;
+    let mut out = vec![0.; MAX * CONTACT_FIELDS];
+    // SAFETY: matching model/data, buffer of MAX rows; read-only.
+    let n = unsafe {
+        robot_sim_geom_contacts(
+            &**model,
+            &**data,
+            geom.index() as i32,
+            out.as_mut_ptr(),
+            MAX as i32,
+        )
+    };
+    let (rows, _) = out.as_chunks::<CONTACT_FIELDS>();
+    rows.iter().take(n.max(0) as usize).copied().collect()
+}

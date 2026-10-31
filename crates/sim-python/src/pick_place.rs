@@ -4,7 +4,8 @@ use crate::{boundary, worker::Worker};
 use mujoco_runtime::{
     Error, JointCommand,
     pick_place::{
-        GRIPPER, ObjectRandomization, ObjectShape, PickPlaceConfig, PickPlaceSim, PickPlaceState,
+        ContactModel, ContactOverrides, GRIPPER, ObjectRandomization, ObjectShape, PickPlaceConfig,
+        PickPlaceSim, PickPlaceState,
     },
     presets,
     skills::{
@@ -130,13 +131,38 @@ pub(crate) struct PickPlaceSimulator {
 #[pymethods]
 impl PickPlaceSimulator {
     #[new]
-    #[pyo3(signature = (model_dir=None, *, robot=None, shape="cube"))]
+    /// ``contact_model="pairwise"`` selects the contact environment in which
+    /// friction DR changes only jaw-pad / table sliding friction (see
+    /// ContactModel in Rust); ``jaw_condim`` etc. fix contact settings there.
+    #[pyo3(signature = (model_dir=None, *, robot=None, shape="cube", contact_model="legacy",
+                        jaw_condim=None, jaw_solref=None, floor_condim=None, floor_solref=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         model_dir: Option<PathBuf>,
         robot: Option<&str>,
         shape: &str,
+        contact_model: &str,
+        jaw_condim: Option<i32>,
+        jaw_solref: Option<[f64; 2]>,
+        floor_condim: Option<i32>,
+        floor_solref: Option<[f64; 2]>,
     ) -> PyResult<Self> {
+        let contact_model = match contact_model {
+            "legacy" => ContactModel::Legacy,
+            "pairwise" => ContactModel::Pairwise,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "contact_model must be legacy or pairwise",
+                ));
+            }
+        };
+        let contact_overrides = ContactOverrides {
+            jaw_condim,
+            jaw_solref,
+            floor_condim,
+            floor_solref,
+        };
         let shape = match shape {
             "cube" => ObjectShape::Cube,
             "sphere" => ObjectShape::Sphere,
@@ -165,6 +191,8 @@ impl PickPlaceSimulator {
                             spec,
                             PickPlaceConfig {
                                 shape,
+                                contact_model,
+                                contact_overrides,
                                 ..PickPlaceConfig::default()
                             },
                         )?,
@@ -206,26 +234,36 @@ impl PickPlaceSimulator {
     }
     /// Object mass (kg) / sliding friction ranges for subsequent resets.
     /// None keeps the scene value; equal ends fix it. Independent of joint DR.
-    #[pyo3(signature = (*, mass=None, friction=None))]
+    /// ``floor_friction`` (object/table) needs ``contact_model="pairwise"``,
+    /// where ``friction`` is the jaw-pad/object friction only.
+    #[pyo3(signature = (*, mass=None, friction=None, floor_friction=None))]
     fn set_object_randomization(
         &self,
         py: Python<'_>,
         mass: Option<[f64; 2]>,
         friction: Option<[f64; 2]>,
+        floor_friction: Option<[f64; 2]>,
     ) -> PyResult<()> {
         self.session(py, move |s| {
-            s.sim
-                .set_object_randomization(ObjectRandomization { mass, friction })
+            s.sim.set_object_randomization(ObjectRandomization {
+                mass,
+                friction,
+                floor_friction,
+            })
         })
     }
     /// Ground-truth object physics of this episode. For logs only: policy
     /// observations must not include it.
     fn object_physics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (p, nominal, r) = self.session(py, |s| {
+        let (p, nominal, r, contact_model) = self.session(py, |s| {
             Ok((
                 s.sim.object_physics(),
                 s.sim.nominal_object_physics(),
                 s.sim.config().object_randomization,
+                match s.sim.config().contact_model {
+                    ContactModel::Legacy => "legacy",
+                    ContactModel::Pairwise => "pairwise",
+                },
             ))
         })?;
         let d = PyDict::new(py);
@@ -233,6 +271,10 @@ impl PickPlaceSimulator {
         d.set_item("inertia", p.inertia.to_vec())?;
         d.set_item("friction", p.friction)?;
         d.set_item("priority", p.priority)?;
+        d.set_item("jaw_friction", p.jaw_friction)?;
+        d.set_item("floor_friction", p.floor_friction)?;
+        d.set_item("contact_model", contact_model)?;
+        d.set_item("floor_friction_range", r.floor_friction.map(|v| v.to_vec()))?;
         d.set_item("nominal_mass", nominal.mass)?;
         d.set_item("nominal_friction", nominal.friction)?;
         d.set_item("mass_range", r.mass.map(|v| v.to_vec()))?;
@@ -252,6 +294,25 @@ impl PickPlaceSimulator {
                 ("gripper_force_max", f.gripper_force_range[1]),
             ]))
         })
+    }
+    /// Every object contact (world frame; normal and force act on the object),
+    /// with penetration ``dist`` < 0. Diagnostic only, never policy input.
+    fn contact_details<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let details = self.session(py, |s| Ok(s.sim.contact_details()))?;
+        details
+            .into_iter()
+            .map(|c| {
+                let d = PyDict::new(py);
+                d.set_item("partner", c.partner)?;
+                d.set_item("geom", c.geom)?;
+                d.set_item("dist", c.dist)?;
+                d.set_item("pos", c.pos.to_vec())?;
+                d.set_item("normal", c.normal.to_vec())?;
+                d.set_item("force", c.force.to_vec())?;
+                d.set_item("normal_force", c.frame_force[0])?;
+                Ok(d)
+            })
+            .collect()
     }
     fn action_bounds(&self, py: Python<'_>) -> PyResult<Vec<[f64; 2]>> {
         self.session(py, |s| Ok(s.sim.sim.action_bounds()))
@@ -528,7 +589,9 @@ mod tests {
     fn panic_poisons_pick_place_worker() {
         Python::initialize();
         Python::attach(|py| {
-            let sim = PickPlaceSimulator::new(py, None, None, "cube").unwrap();
+            let sim =
+                PickPlaceSimulator::new(py, None, None, "cube", "legacy", None, None, None, None)
+                    .unwrap();
             let error = sim
                 .session::<()>(py, |_| panic!("injected pick-place failure"))
                 .unwrap_err();
@@ -542,7 +605,9 @@ mod tests {
     fn pick_place_wait_releases_gil() {
         Python::initialize();
         Python::attach(|py| {
-            let sim = PickPlaceSimulator::new(py, None, None, "cube").unwrap();
+            let sim =
+                PickPlaceSimulator::new(py, None, None, "cube", "legacy", None, None, None, None)
+                    .unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             let other = std::thread::spawn(move || Python::attach(|_| tx.send(()).unwrap()));
             sim.session(py, move |_| {

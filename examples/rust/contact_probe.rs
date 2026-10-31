@@ -10,6 +10,7 @@ fn main() -> robotics_core::Result<()> {
     let fixed = |m: f64, f: Option<f64>| ObjectRandomization {
         mass: Some([m, m]),
         friction: f.map(|f| [f, f]),
+        floor_friction: None,
     };
     let settings: [(&str, ObjectRandomization); 6] = [
         ("dr_off", ObjectRandomization::default()),

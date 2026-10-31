@@ -71,3 +71,71 @@ int robot_sim_max_geom_priority(const mjModel* m) {
   for (int g = 0; g < m->ngeom; g++) if (m->geom_priority[g] > p) p = m->geom_priority[g];
   return p;
 }
+
+/* Contact fields of one geom. Layout: friction[3], condim, solref[2], priority.
+ * Writing changes only these values (no sizes or topology); contacts created
+ * after the write use them. */
+int robot_sim_read_geom_contact(const mjModel* m, int g, double* out) {
+  if (g < 0 || g >= m->ngeom) return 0;
+  for (int i = 0; i < 3; i++) out[i] = m->geom_friction[3 * g + i];
+  out[3] = m->geom_condim[g];
+  out[4] = m->geom_solref[mjNREF * g];
+  out[5] = m->geom_solref[mjNREF * g + 1];
+  out[6] = m->geom_priority[g];
+  return 1;
+}
+int robot_sim_write_geom_contact(mjModel* m, int g, const double* v) {
+  if (g < 0 || g >= m->ngeom) return 0;
+  int condim = (int)v[3];
+  if (condim != 1 && condim != 3 && condim != 4 && condim != 6) return 0;
+  for (int i = 0; i < 3; i++) m->geom_friction[3 * g + i] = v[i];
+  m->geom_condim[g] = condim;
+  m->geom_solref[mjNREF * g] = v[4];
+  m->geom_solref[mjNREF * g + 1] = v[5];
+  m->geom_priority[g] = (int)v[6];
+  return 1;
+}
+const char* robot_sim_geom_name(const mjModel* m, int g) {
+  const char* name = (g >= 0 && g < m->ngeom) ? mj_id2name(m, mjOBJ_GEOM, g) : NULL;
+  return name ? name : "";
+}
+/* Solver options: timestep, integrator, solver, iterations, ls_iterations,
+ * cone, impratio, noslip_iterations, tolerance, o_margin (override flag). */
+void robot_sim_read_option(const mjModel* m, double* out) {
+  out[0] = m->opt.timestep; out[1] = m->opt.integrator; out[2] = m->opt.solver;
+  out[3] = m->opt.iterations; out[4] = m->opt.ls_iterations; out[5] = m->opt.cone;
+  out[6] = m->opt.impratio; out[7] = m->opt.noslip_iterations; out[8] = m->opt.tolerance;
+  out[9] = (m->opt.enableflags & mjENBL_OVERRIDE) ? 1 : 0;
+}
+/* Diagnostics: up to max contacts of geom g, ROBOT_SIM_CONTACT_FIELDS each:
+ * other geom, other body, dist, dim, pos[3], normal into g[3], world force on
+ * g[3], contact-frame force (normal, t1, t2), friction[0], solref[2],
+ * solimp[0..2], frame tangent1 into g[3]. Returns the number written. */
+#define ROBOT_SIM_CONTACT_FIELDS 27
+int robot_sim_geom_contacts(const mjModel* m, const mjData* d, int g, double* out, int max) {
+  int n = 0;
+  for (int i = 0; i < d->ncon && n < max; i++) {
+    const mjContact* c = d->contact + i;
+    int other;
+    double s;
+    if (c->geom[1] == g) { other = c->geom[0]; s = 1; }       /* frame normal: geom1 -> geom2 */
+    else if (c->geom[0] == g) { other = c->geom[1]; s = -1; }
+    else continue;
+    if (other < 0) continue;
+    mjtNum f[6];
+    mj_contactForce(m, d, i, f);
+    double* o = out + ROBOT_SIM_CONTACT_FIELDS * n++;
+    o[0] = other; o[1] = m->geom_bodyid[other]; o[2] = c->dist; o[3] = c->dim;
+    for (int k = 0; k < 3; k++) {
+      o[4 + k] = c->pos[k];
+      o[7 + k] = s * c->frame[k];
+      o[10 + k] = s * (f[0] * c->frame[k] + f[1] * c->frame[3 + k] + f[2] * c->frame[6 + k]);
+      o[24 + k] = s * c->frame[3 + k];
+    }
+    o[13] = f[0]; o[14] = f[1]; o[15] = f[2];
+    o[16] = c->friction[0]; o[17] = c->solref[0]; o[18] = c->solref[1];
+    o[19] = c->solimp[0]; o[20] = c->solimp[1]; o[21] = c->solimp[2];
+    o[22] = c->solimp[3]; o[23] = c->solimp[4];
+  }
+  return n;
+}

@@ -29,6 +29,40 @@ pub struct PickPlaceConfig {
     pub object_randomization: ObjectRandomization,
     /// Object geometry. `cube_half` is its rest height (half edge or radius).
     pub shape: ObjectShape,
+    /// How object friction randomization maps onto MuJoCo contacts.
+    pub contact_model: ContactModel,
+    /// Fixed contact settings applied at load (`ContactModel::Pairwise` only).
+    pub contact_overrides: ContactOverrides,
+}
+
+/// Contact environment version. Results from different versions are separate
+/// experiments and must not be pooled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContactModel {
+    /// Original behaviour: friction DR raises the object geom's priority above
+    /// the gripper pads, so one value sets jaw and table friction and the object's
+    /// condim 4 / solref 0.01 replace the pads' condim 6 and the mixed table solref.
+    #[default]
+    Legacy,
+    /// Friction DR writes the jaw-pad and object-table sliding friction
+    /// separately and never changes priority, condim or solref, so the other
+    /// contact settings stay those of the unrandomized scene (or of
+    /// `ContactOverrides`). Jaw contacts are resolved by the priority-1 gripper
+    /// geoms; object-table contacts by the equal-priority max/mix rule, so the
+    /// object and table geoms are written with the same values.
+    Pairwise,
+}
+
+/// Explicit contact settings for `ContactModel::Pairwise`. `None` keeps the scene.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ContactOverrides {
+    pub jaw_condim: Option<i32>,
+    pub jaw_solref: Option<[f64; 2]>,
+    /// Written to both the object and the table geom.
+    pub floor_condim: Option<i32>,
+    pub floor_solref: Option<[f64; 2]>,
 }
 
 /// Object geometry swapped into the scene at load time; same body, joint,
@@ -59,6 +93,33 @@ impl ObjectShape {
         })
     }
 }
+impl PickPlaceConfig {
+    fn validate_contact_model(&self) -> Result<()> {
+        if self.contact_model == ContactModel::Legacy
+            && (self.contact_overrides != ContactOverrides::default()
+                || self.object_randomization.floor_friction.is_some())
+        {
+            return Err(Error::Input(
+                "floor friction and contact overrides need the pairwise contact model".into(),
+            ));
+        }
+        let o = self.contact_overrides;
+        for c in [o.jaw_condim, o.floor_condim].into_iter().flatten() {
+            if ![1, 3, 4, 6].contains(&c) {
+                return Err(Error::Input("condim must be 1, 3, 4 or 6".into()));
+            }
+        }
+        for [a, b] in [o.jaw_solref, o.floor_solref].into_iter().flatten() {
+            // Positive: (timeconst, dampratio). Negative: (-stiffness, -damping).
+            if !(a.is_finite() && b.is_finite() && ((a > 0. && b > 0.) || (a < 0. && b <= 0.))) {
+                return Err(Error::Input(
+                    "solref must be (timeconst, dampratio) > 0 or (-stiffness, -damping)".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 impl Default for PickPlaceConfig {
     fn default() -> Self {
         Self {
@@ -71,6 +132,8 @@ impl Default for PickPlaceConfig {
             lift_height: 0.03,
             object_randomization: ObjectRandomization::default(),
             shape: ObjectShape::Cube,
+            contact_model: ContactModel::Legacy,
+            contact_overrides: ContactOverrides::default(),
         }
     }
 }
@@ -86,18 +149,22 @@ pub struct ObjectRandomization {
     /// is given the highest contact priority so this value (with the object's
     /// condim/solref) governs every object contact, jaws and table included;
     /// otherwise the gripper's priority-1 pads would always win.
+    /// With `ContactModel::Pairwise` it is the jaw-pad/object friction only.
     pub friction: Option<[f64; 2]>,
+    /// Object/table sliding friction (`ContactModel::Pairwise` only).
+    pub floor_friction: Option<[f64; 2]>,
 }
 impl ObjectRandomization {
     pub const MASS_LIMITS: [f64; 2] = [1e-3, 1.0];
     pub const FRICTION_LIMITS: [f64; 2] = [0.01, 3.0];
     pub fn enabled(&self) -> bool {
-        self.mass.is_some() || self.friction.is_some()
+        self.mass.is_some() || self.friction.is_some() || self.floor_friction.is_some()
     }
     pub fn validate(&self) -> Result<()> {
         for (range, [lo, hi]) in [
             (self.mass, Self::MASS_LIMITS),
             (self.friction, Self::FRICTION_LIMITS),
+            (self.floor_friction, Self::FRICTION_LIMITS),
         ] {
             if let Some([a, b]) = range
                 && !(a.is_finite() && b.is_finite() && lo <= a && a <= b && b <= hi)
@@ -117,8 +184,12 @@ impl ObjectRandomization {
 pub struct ObjectPhysics {
     pub mass: f64,
     pub inertia: [f64; 3],
+    /// Sliding friction stored on the object geom.
     pub friction: f64,
     pub priority: i32,
+    /// Effective sliding friction of jaw-pad and table contacts.
+    pub jaw_friction: f64,
+    pub floor_friction: f64,
 }
 impl ObjectPhysics {
     fn from_raw(v: [f64; 6]) -> Self {
@@ -127,6 +198,8 @@ impl ObjectPhysics {
             inertia: [v[1], v[2], v[3]],
             friction: v[4],
             priority: v[5] as i32,
+            jaw_friction: f64::NAN,
+            floor_friction: f64::NAN,
         }
     }
     fn raw(&self) -> [f64; 6] {
@@ -176,6 +249,11 @@ pub struct PickPlaceSim {
     /// Contact priority that beats every other geom (used with friction DR).
     object_priority: i32,
     table_geom: ObjectId<obj::Geom>,
+    /// Gripper geoms with contact priority (the jaw pads) and their scene
+    /// friction / the table's scene friction.
+    jaw_geoms: Vec<ObjectId<obj::Geom>>,
+    jaw_nominal_friction: f64,
+    table_nominal_friction: f64,
     target_body: ObjectId<obj::Body>,
     fixed_jaw_body: ObjectId<obj::Body>,
     moving_jaw_body: ObjectId<obj::Body>,
@@ -280,11 +358,53 @@ impl PickPlaceSim {
             .object_id::<obj::Site>("gripperframe")
             .ok_or_else(|| missing("gripperframe"))?;
         config.object_randomization.validate()?;
+        config.validate_contact_model()?;
         let cube_body = m.geom_bodyid(cube_geom);
-        let nominal_object = ObjectPhysics::from_raw(crate::model_access::object_parameters(
+        let object_priority = crate::model_access::max_geom_priority(m) + 1;
+        let cube_contact = crate::model_access::geom_contact(m, cube_geom)?;
+        let jaw_geoms: Vec<_> = (0..m.ngeom())
+            .map(|i| unsafe { ObjectId::<obj::Geom>::new_unchecked(i) })
+            .filter(|&g| m.geom_priority(g) > cube_contact[6] as i32)
+            .collect();
+        let jaw_nominal_friction = match jaw_geoms.first() {
+            Some(&g) => m.geom_friction(g)[0],
+            None => return Err(missing("gripper contact geoms")),
+        };
+        if jaw_geoms
+            .iter()
+            .any(|&g| m.geom_friction(g)[0] != jaw_nominal_friction)
+        {
+            return Err(Error::Model("gripper pads differ in friction".into()));
+        }
+        let table_nominal_friction = m.geom_friction(table_geom)[0];
+        let mut nominal_object = ObjectPhysics::from_raw(crate::model_access::object_parameters(
             m, cube_body, cube_geom,
         )?);
-        let object_priority = crate::model_access::max_geom_priority(m) + 1;
+        // Scene rule: pads have higher priority (their value wins); object vs
+        // table have equal priority (the larger value wins).
+        nominal_object.jaw_friction = jaw_nominal_friction;
+        nominal_object.floor_friction = nominal_object.friction.max(table_nominal_friction);
+        let mut sim = sim;
+        if config.contact_model == ContactModel::Pairwise {
+            let o = config.contact_overrides;
+            let edit = |sim: &mut Simulator, g, condim: Option<i32>, solref: Option<[f64; 2]>| {
+                let mut v = crate::model_access::geom_contact(&sim.model, g)?;
+                if let Some(c) = condim {
+                    v[3] = f64::from(c);
+                }
+                if let Some([a, b]) = solref {
+                    v[4] = a;
+                    v[5] = b;
+                }
+                crate::model_access::set_geom_contact(&mut sim.model, g, &v)
+            };
+            for &g in &jaw_geoms {
+                edit(&mut sim, g, o.jaw_condim, o.jaw_solref)?;
+            }
+            for g in [cube_geom, table_geom] {
+                edit(&mut sim, g, o.floor_condim, o.floor_solref)?;
+            }
+        }
         let mut this = Self {
             sim,
             config,
@@ -295,6 +415,9 @@ impl PickPlaceSim {
             object: nominal_object,
             object_priority,
             table_geom,
+            jaw_geoms,
+            jaw_nominal_friction,
+            table_nominal_friction,
             target_body,
             fixed_jaw_body,
             moving_jaw_body,
@@ -316,7 +439,10 @@ impl PickPlaceSim {
     /// Takes effect at the next reset; physics never changes mid-episode.
     pub fn set_object_randomization(&mut self, r: ObjectRandomization) -> Result<()> {
         r.validate()?;
-        self.config.object_randomization = r;
+        let mut config = self.config.clone();
+        config.object_randomization = r;
+        config.validate_contact_model()?;
+        self.config = config;
         Ok(())
     }
     /// Ground-truth object physics of the current episode (logging only).
@@ -333,19 +459,51 @@ impl PickPlaceSim {
         let n = self.nominal_object;
         let mut rng = seed ^ 0x0b1e_c7d4_a5c0_0000;
         let mass = r.mass.map_or(n.mass, |m| lerp(m, uniform(&mut rng)));
-        let friction = r
-            .friction
-            .map_or(n.friction, |f| lerp(f, uniform(&mut rng)));
+        let friction = r.friction.map_or(
+            if self.config.contact_model == ContactModel::Pairwise {
+                n.jaw_friction
+            } else {
+                n.friction
+            },
+            |f| lerp(f, uniform(&mut rng)),
+        );
         let scale = mass / n.mass;
+        let inertia = n.inertia.map(|i| i * scale);
+        if self.config.contact_model == ContactModel::Pairwise {
+            // Drawn after mass and jaw friction so those match Legacy per seed.
+            let floor = r
+                .floor_friction
+                .map_or(n.floor_friction, |f| lerp(f, uniform(&mut rng)));
+            return ObjectPhysics {
+                mass,
+                inertia,
+                // Object and table carry the same value so max() resolves to it.
+                friction: if r.floor_friction.is_some() {
+                    floor
+                } else {
+                    n.friction
+                },
+                priority: n.priority,
+                jaw_friction: friction,
+                floor_friction: floor,
+            };
+        }
+        let (priority, jaw_friction, floor_friction) = if r.friction.is_some() {
+            (self.object_priority, friction, friction)
+        } else {
+            (
+                n.priority,
+                n.jaw_friction,
+                friction.max(self.table_nominal_friction),
+            )
+        };
         ObjectPhysics {
             mass,
-            inertia: n.inertia.map(|i| i * scale),
+            inertia,
             friction,
-            priority: if r.friction.is_some() {
-                self.object_priority
-            } else {
-                n.priority
-            },
+            priority,
+            jaw_friction,
+            floor_friction,
         }
     }
     fn apply_object_physics(&mut self, p: ObjectPhysics) -> Result<()> {
@@ -359,8 +517,35 @@ impl PickPlaceSim {
             self.cube_geom,
             &p.raw(),
         )?;
+        if self.config.contact_model == ContactModel::Pairwise {
+            let table = if self.config.object_randomization.floor_friction.is_some() {
+                p.floor_friction
+            } else {
+                self.table_nominal_friction
+            };
+            let mut writes = vec![(self.table_geom, table)];
+            writes.extend(self.jaw_geoms.iter().map(|&g| (g, p.jaw_friction)));
+            for (g, mu) in writes {
+                let mut v = crate::model_access::geom_contact(&self.sim.model, g)?;
+                v[0] = mu;
+                crate::model_access::set_geom_contact(&mut self.sim.model, g, &v)?;
+            }
+        }
         self.object = p;
         Ok(())
+    }
+    /// Gripper geoms whose contact parameters govern jaw/object contacts.
+    pub fn jaw_geoms(&self) -> &[ObjectId<obj::Geom>] {
+        &self.jaw_geoms
+    }
+    pub fn cube_geom(&self) -> ObjectId<obj::Geom> {
+        self.cube_geom
+    }
+    pub fn table_geom(&self) -> ObjectId<obj::Geom> {
+        self.table_geom
+    }
+    pub fn jaw_nominal_friction(&self) -> f64 {
+        self.jaw_nominal_friction
     }
 
     /// Derive the approach axis and grasp centre from the jaw-tip geoms
@@ -568,6 +753,86 @@ impl PickPlaceSim {
             });
         }
         out
+    }
+
+    /// Every contact of the object with geometry and forces in the world frame
+    /// (normal and force point into the object). Diagnostic only.
+    pub fn contact_details(&self) -> Vec<ContactDetail> {
+        let m = &self.sim.model;
+        crate::model_access::geom_contacts(m, &self.sim.data, self.cube_geom)
+            .into_iter()
+            .map(|r| {
+                let geom = r[0] as usize;
+                let body = r[1] as usize;
+                let v = |i: usize| [r[i], r[i + 1], r[i + 2]];
+                ContactDetail {
+                    partner: if geom == self.table_geom.index() {
+                        "table"
+                    } else if body == self.fixed_jaw_body.index() {
+                        "fixed_jaw"
+                    } else if body == self.moving_jaw_body.index() {
+                        "moving_jaw"
+                    } else {
+                        "other"
+                    },
+                    geom: crate::model_access::geom_name(m, geom),
+                    geom_id: geom,
+                    dist: r[2],
+                    dim: r[3] as usize,
+                    pos: v(4),
+                    normal: v(7),
+                    force: v(10),
+                    frame_force: v(13),
+                    friction: r[16],
+                    solref: [r[17], r[18]],
+                    solimp: [r[19], r[20], r[21], r[22], r[23]],
+                    tangent1: v(24),
+                }
+            })
+            .collect()
+    }
+    /// Model-level solver settings (timestep, integrator, ...). Diagnostic only.
+    pub fn solver_options(&self) -> SolverOptions {
+        let o = crate::model_access::solver_option(&self.sim.model);
+        SolverOptions {
+            timestep: o[0],
+            integrator: o[1] as i32,
+            solver: o[2] as i32,
+            iterations: o[3] as i32,
+            ls_iterations: o[4] as i32,
+            cone: o[5] as i32,
+            impratio: o[6],
+            noslip_iterations: o[7] as i32,
+            tolerance: o[8],
+            override_contacts: o[9] != 0.,
+        }
+    }
+    /// friction[3], condim, solref[2], priority of a geom as now in the model.
+    pub fn geom_contact_parameters(&self, geom: ObjectId<obj::Geom>) -> Result<[f64; 7]> {
+        crate::model_access::geom_contact(&self.sim.model, geom)
+    }
+    pub fn geom_name(&self, geom: ObjectId<obj::Geom>) -> String {
+        crate::model_access::geom_name(&self.sim.model, geom.index())
+    }
+    /// Static contact description of a geom as compiled (and as edited).
+    pub fn geom_info(&self, geom: ObjectId<obj::Geom>) -> Result<GeomInfo> {
+        let m = &self.sim.model;
+        let c = self.geom_contact_parameters(geom)?;
+        Ok(GeomInfo {
+            name: self.geom_name(geom),
+            id: geom.index(),
+            body: m.geom_bodyid(geom).index(),
+            kind: format!("{:?}", m.geom_type(geom)),
+            size: m.geom_size(geom),
+            pos: m.geom_pos(geom),
+            friction: [c[0], c[1], c[2]],
+            condim: c[3] as i32,
+            solref: [c[4], c[5]],
+            priority: c[6] as i32,
+            solimp: m.geom_solimp(geom),
+            solmix: m.geom_solmix(geom),
+            margin: m.geom_margin(geom),
+        })
     }
 
     /// Normal contact forces on the object (N, summed per partner) and the
@@ -784,6 +1049,58 @@ pub struct ContactParameters {
     pub solreffriction: [f64; 2],
     pub solimp: [f64; 5],
     pub includemargin: f64,
+}
+
+/// One object contact (see `PickPlaceSim::contact_details`). World frame;
+/// `normal` and `force` act on the object. `frame_force` = (normal, t1, t2).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContactDetail {
+    pub partner: &'static str,
+    pub geom: String,
+    pub geom_id: usize,
+    pub dist: f64,
+    pub dim: usize,
+    pub pos: [f64; 3],
+    pub normal: [f64; 3],
+    pub force: [f64; 3],
+    pub frame_force: [f64; 3],
+    pub friction: f64,
+    pub solref: [f64; 2],
+    pub solimp: [f64; 5],
+    pub tangent1: [f64; 3],
+}
+
+/// See `PickPlaceSim::geom_info`; `pos` is in the parent body frame.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GeomInfo {
+    pub name: String,
+    pub id: usize,
+    pub body: usize,
+    pub kind: String,
+    pub size: [f64; 3],
+    pub pos: [f64; 3],
+    pub friction: [f64; 3],
+    pub condim: i32,
+    pub solref: [f64; 2],
+    pub priority: i32,
+    pub solimp: [f64; 5],
+    pub solmix: f64,
+    pub margin: f64,
+}
+
+/// MuJoCo `mjOption` fields relevant to contact (enums as their integer codes).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct SolverOptions {
+    pub timestep: f64,
+    pub integrator: i32,
+    pub solver: i32,
+    pub iterations: i32,
+    pub ls_iterations: i32,
+    pub cone: i32,
+    pub impratio: f64,
+    pub noslip_iterations: i32,
+    pub tolerance: f64,
+    pub override_contacts: bool,
 }
 
 /// See `PickPlaceSim::grip_forces`.

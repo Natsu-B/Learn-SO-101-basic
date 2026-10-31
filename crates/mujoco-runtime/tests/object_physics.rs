@@ -10,6 +10,7 @@ fn env() -> PickPlaceSim {
 const RANGE: ObjectRandomization = ObjectRandomization {
     mass: Some([0.02, 0.05]),
     friction: Some([0.8, 1.5]),
+    floor_friction: None,
 };
 
 #[test]
@@ -72,14 +73,17 @@ fn invalid_ranges_are_rejected() {
         ObjectRandomization {
             mass: Some([0.05, 0.02]),
             friction: None,
+            floor_friction: None,
         },
         ObjectRandomization {
             mass: Some([0.0, 0.02]),
             friction: None,
+            floor_friction: None,
         },
         ObjectRandomization {
             mass: None,
             friction: Some([f64::NAN, 1.0]),
+            floor_friction: None,
         },
     ] {
         assert!(pp.set_object_randomization(r).is_err());
@@ -93,6 +97,7 @@ fn extreme_objects_rest_without_drift_or_instability() {
         pp.set_object_randomization(ObjectRandomization {
             mass: Some([m, m]),
             friction: Some([f, f]),
+            floor_friction: None,
         })
         .unwrap();
         pp.reset(11).unwrap();
@@ -134,6 +139,7 @@ fn released_cube_falls_and_settles_on_table() {
         pp.set_object_randomization(ObjectRandomization {
             mass: Some([m, m]),
             friction: Some([f, f]),
+            floor_friction: None,
         })
         .unwrap();
         pp.reset(2).unwrap();

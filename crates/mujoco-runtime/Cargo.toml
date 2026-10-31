@@ -48,3 +48,15 @@ path = "../../examples/rust/pick_place_probe.rs"
 [[example]]
 name = "so101_pick_place"
 path = "../../examples/rust/so101_pick_place.rs"
+
+[[example]]
+name = "contact_audit"
+path = "../../examples/rust/contact_audit.rs"
+
+[[example]]
+name = "grip_sensitivity"
+path = "../../examples/rust/grip_sensitivity.rs"
+
+[[example]]
+name = "penetration_probe"
+path = "../../examples/rust/penetration_probe.rs"

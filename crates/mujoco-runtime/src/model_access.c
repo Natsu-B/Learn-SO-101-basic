@@ -40,3 +40,34 @@ int robot_sim_write_parameters(mjModel* m, int a, const double* values) {
   m->actuator_forcerange[2*a]=values[5];m->actuator_forcerange[2*a+1]=values[6];
   return 1;
 }
+
+/* Object (free body + one geom) physics for per-episode randomization.
+ * Layout: mass, principal inertia[3], sliding friction, priority. */
+static int checked_object(const mjModel* m, int b, int g) {
+  return b > 0 && b < m->nbody && g >= 0 && g < m->ngeom && m->geom_bodyid[g] == b;
+}
+int robot_sim_read_object(const mjModel* m, int b, int g, double* out) {
+  if (!checked_object(m, b, g)) return 0;
+  out[0] = m->body_mass[b];
+  for (int i = 0; i < 3; i++) out[1 + i] = m->body_inertia[3 * b + i];
+  out[4] = m->geom_friction[3 * g];
+  out[5] = m->geom_priority[g];
+  return 1;
+}
+/* Writes only these fields, then mj_setConst recomputes the mass-dependent
+ * constants (subtree mass, invweight0, stat.meaninertia, actuator_acc0) at
+ * qpos0. The caller resets mjData afterwards; d is only scratch here. */
+int robot_sim_write_object(mjModel* m, mjData* d, int b, int g, const double* v) {
+  if (!checked_object(m, b, g) || !(v[0] > 0)) return 0;
+  m->body_mass[b] = v[0];
+  for (int i = 0; i < 3; i++) m->body_inertia[3 * b + i] = v[1 + i];
+  m->geom_friction[3 * g] = v[4];
+  m->geom_priority[g] = (int)v[5];
+  mj_setConst(m, d);
+  return 1;
+}
+int robot_sim_max_geom_priority(const mjModel* m) {
+  int p = 0;
+  for (int g = 0; g < m->ngeom; g++) if (m->geom_priority[g] > p) p = m->geom_priority[g];
+  return p;
+}

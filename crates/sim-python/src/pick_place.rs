@@ -3,7 +3,7 @@
 use crate::{boundary, worker::Worker};
 use mujoco_runtime::{
     Error, JointCommand,
-    pick_place::{GRIPPER, PickPlaceConfig, PickPlaceSim, PickPlaceState},
+    pick_place::{GRIPPER, ObjectRandomization, PickPlaceConfig, PickPlaceSim, PickPlaceState},
     presets,
     skills::{
         self, CONTROL_PERIOD, Criteria, EpisodeReport, ScriptedGrasp, ScriptedPlace,
@@ -166,6 +166,41 @@ impl PickPlaceSimulator {
             Ok(s.snapshot())
         })?;
         state_dict(py, snapshot)
+    }
+    /// Object mass (kg) / sliding friction ranges for subsequent resets.
+    /// None keeps the scene value; equal ends fix it. Independent of joint DR.
+    #[pyo3(signature = (*, mass=None, friction=None))]
+    fn set_object_randomization(
+        &self,
+        py: Python<'_>,
+        mass: Option<[f64; 2]>,
+        friction: Option<[f64; 2]>,
+    ) -> PyResult<()> {
+        self.session(py, move |s| {
+            s.sim
+                .set_object_randomization(ObjectRandomization { mass, friction })
+        })
+    }
+    /// Ground-truth object physics of this episode. For logs only: policy
+    /// observations must not include it.
+    fn object_physics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (p, nominal, r) = self.session(py, |s| {
+            Ok((
+                s.sim.object_physics(),
+                s.sim.nominal_object_physics(),
+                s.sim.config().object_randomization,
+            ))
+        })?;
+        let d = PyDict::new(py);
+        d.set_item("mass", p.mass)?;
+        d.set_item("inertia", p.inertia.to_vec())?;
+        d.set_item("friction", p.friction)?;
+        d.set_item("priority", p.priority)?;
+        d.set_item("nominal_mass", nominal.mass)?;
+        d.set_item("nominal_friction", nominal.friction)?;
+        d.set_item("mass_range", r.mass.map(|v| v.to_vec()))?;
+        d.set_item("friction_range", r.friction.map(|v| v.to_vec()))?;
+        Ok(d)
     }
     fn action_bounds(&self, py: Python<'_>) -> PyResult<Vec<[f64; 2]>> {
         self.session(py, |s| Ok(s.sim.sim.action_bounds()))

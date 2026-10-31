@@ -4,6 +4,7 @@
 use crate::{Simulator, presets};
 use robotics_core::{Error, JointCommand, Result};
 use rusty_mujoco::{self as mj, ObjectId, joint, obj};
+use serde::{Deserialize, Serialize};
 
 pub const SCENE_TEMPLATE: &str = include_str!("../../../scenes/so101_pick_place.xml");
 /// Arm actuators in API order (gripper excluded).
@@ -24,6 +25,8 @@ pub struct PickPlaceConfig {
     pub place_tolerance: f64,
     /// Height above rest for a successful grasp/lift.
     pub lift_height: f64,
+    /// Per-episode object mass/friction sampling; disabled by default.
+    pub object_randomization: ObjectRandomization,
 }
 impl Default for PickPlaceConfig {
     fn default() -> Self {
@@ -35,7 +38,68 @@ impl Default for PickPlaceConfig {
             min_separation: 0.08,
             place_tolerance: 0.02,
             lift_height: 0.03,
+            object_randomization: ObjectRandomization::default(),
         }
+    }
+}
+
+/// Reset-time object physics ranges, independent of the robot's joint DR.
+/// `None` keeps the scene value. A range with equal ends fixes the value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObjectRandomization {
+    /// Object mass (kg). Principal inertia is scaled by the same ratio.
+    pub mass: Option<[f64; 2]>,
+    /// Sliding friction coefficient of the object. When set, the object geom
+    /// is given the highest contact priority so this value (with the object's
+    /// condim/solref) governs every object contact, jaws and table included;
+    /// otherwise the gripper's priority-1 pads would always win.
+    pub friction: Option<[f64; 2]>,
+}
+impl ObjectRandomization {
+    pub const MASS_LIMITS: [f64; 2] = [1e-3, 1.0];
+    pub const FRICTION_LIMITS: [f64; 2] = [0.05, 3.0];
+    pub fn enabled(&self) -> bool {
+        self.mass.is_some() || self.friction.is_some()
+    }
+    pub fn validate(&self) -> Result<()> {
+        for (range, [lo, hi]) in [
+            (self.mass, Self::MASS_LIMITS),
+            (self.friction, Self::FRICTION_LIMITS),
+        ] {
+            if let Some([a, b]) = range
+                && !(a.is_finite() && b.is_finite() && lo <= a && a <= b && b <= hi)
+            {
+                return Err(Error::Input(format!(
+                    "object randomization range must satisfy {lo} <= min <= max <= {hi}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Object physics actually in the compiled model (ground truth; for logs only,
+/// never for policy observations).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ObjectPhysics {
+    pub mass: f64,
+    pub inertia: [f64; 3],
+    pub friction: f64,
+    pub priority: i32,
+}
+impl ObjectPhysics {
+    fn from_raw(v: [f64; 6]) -> Self {
+        Self {
+            mass: v[0],
+            inertia: [v[1], v[2], v[3]],
+            friction: v[4],
+            priority: v[5] as i32,
+        }
+    }
+    fn raw(&self) -> [f64; 6] {
+        let [a, b, c] = self.inertia;
+        [self.mass, a, b, c, self.friction, self.priority as f64]
     }
 }
 
@@ -74,6 +138,11 @@ pub struct PickPlaceSim {
     config: PickPlaceConfig,
     cube_joint: ObjectId<joint::Free>,
     cube_geom: ObjectId<obj::Geom>,
+    cube_body: ObjectId<obj::Body>,
+    nominal_object: ObjectPhysics,
+    object: ObjectPhysics,
+    /// Contact priority that beats every other geom (used with friction DR).
+    object_priority: i32,
     table_geom: ObjectId<obj::Geom>,
     target_body: ObjectId<obj::Body>,
     fixed_jaw_body: ObjectId<obj::Body>,
@@ -172,11 +241,21 @@ impl PickPlaceSim {
         let grip_site = m
             .object_id::<obj::Site>("gripperframe")
             .ok_or_else(|| missing("gripperframe"))?;
+        config.object_randomization.validate()?;
+        let cube_body = m.geom_bodyid(cube_geom);
+        let nominal_object = ObjectPhysics::from_raw(crate::model_access::object_parameters(
+            m, cube_body, cube_geom,
+        )?);
+        let object_priority = crate::model_access::max_geom_priority(m) + 1;
         let mut this = Self {
             sim,
             config,
             cube_joint,
             cube_geom,
+            cube_body,
+            nominal_object,
+            object: nominal_object,
+            object_priority,
             table_geom,
             target_body,
             fixed_jaw_body,
@@ -195,6 +274,55 @@ impl PickPlaceSim {
     }
     pub fn config(&self) -> &PickPlaceConfig {
         &self.config
+    }
+    /// Takes effect at the next reset; physics never changes mid-episode.
+    pub fn set_object_randomization(&mut self, r: ObjectRandomization) -> Result<()> {
+        r.validate()?;
+        self.config.object_randomization = r;
+        Ok(())
+    }
+    /// Ground-truth object physics of the current episode (logging only).
+    pub fn object_physics(&self) -> ObjectPhysics {
+        self.object
+    }
+    pub fn nominal_object_physics(&self) -> ObjectPhysics {
+        self.nominal_object
+    }
+    /// Deterministic per-seed object physics from an independent RNG stream,
+    /// so enabling it does not change the sampled cube/goal positions.
+    pub fn sample_object_physics(&self, seed: u64) -> ObjectPhysics {
+        let r = self.config.object_randomization;
+        let n = self.nominal_object;
+        let mut rng = seed ^ 0x0b1e_c7d4_a5c0_0000;
+        let mass = r.mass.map_or(n.mass, |m| lerp(m, uniform(&mut rng)));
+        let friction = r
+            .friction
+            .map_or(n.friction, |f| lerp(f, uniform(&mut rng)));
+        let scale = mass / n.mass;
+        ObjectPhysics {
+            mass,
+            inertia: n.inertia.map(|i| i * scale),
+            friction,
+            priority: if r.friction.is_some() {
+                self.object_priority
+            } else {
+                n.priority
+            },
+        }
+    }
+    fn apply_object_physics(&mut self, p: ObjectPhysics) -> Result<()> {
+        if p == self.object {
+            return Ok(());
+        }
+        crate::model_access::set_object_parameters(
+            &mut self.sim.model,
+            &mut self.sim.data,
+            self.cube_body,
+            self.cube_geom,
+            &p.raw(),
+        )?;
+        self.object = p;
+        Ok(())
     }
 
     /// Derive the approach axis and grasp centre from the jaw-tip geoms
@@ -386,6 +514,8 @@ impl PickPlaceSim {
     // ---- episode ------------------------------------------------------
     /// Reset physics, then sample cube and goal positions (reproducible by seed).
     pub fn reset(&mut self, seed: u64) -> Result<()> {
+        // Object model fields first: reset_seed then rebuilds mjData from them.
+        self.apply_object_physics(self.sample_object_physics(seed))?;
         self.sim.reset_seed(seed)?;
         let mut rng = seed ^ 0x5eed_9a1c_e000_0000;
         let c = self.config.clone();

@@ -70,3 +70,73 @@ pub(crate) fn set_parameters(
     }
     Ok(())
 }
+
+unsafe extern "C" {
+    fn robot_sim_read_object(
+        model: *const mj::bindgen::mjModel,
+        body: i32,
+        geom: i32,
+        out: *mut f64,
+    ) -> i32;
+    fn robot_sim_write_object(
+        model: *mut mj::bindgen::mjModel,
+        data: *mut mj::bindgen::mjData,
+        body: i32,
+        geom: i32,
+        values: *const f64,
+    ) -> i32;
+    fn robot_sim_max_geom_priority(model: *const mj::bindgen::mjModel) -> i32;
+}
+/// mass, principal inertia[3], sliding friction, priority of a body's geom.
+pub(crate) fn object_parameters(
+    model: &mj::mjModel,
+    body: ObjectId<obj::Body>,
+    geom: ObjectId<obj::Geom>,
+) -> robotics_core::Result<[f64; 6]> {
+    let mut out = [0.; 6];
+    // SAFETY: live model, six-element buffer, C checks body/geom ownership; no retained pointers.
+    let ok = unsafe {
+        robot_sim_read_object(
+            &**model,
+            body.index() as i32,
+            geom.index() as i32,
+            out.as_mut_ptr(),
+        )
+    };
+    if ok == 0 {
+        return Err(robotics_core::Error::Model("invalid object mapping".into()));
+    }
+    Ok(out)
+}
+pub(crate) fn set_object_parameters(
+    model: &mut mj::mjModel,
+    data: &mut mj::mjData,
+    body: ObjectId<obj::Body>,
+    geom: ObjectId<obj::Geom>,
+    values: &[f64; 6],
+) -> robotics_core::Result<()> {
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err(robotics_core::Error::Input(
+            "nonfinite object parameter".into(),
+        ));
+    }
+    // SAFETY: exclusive reset-time access to matching model/data; no size or
+    // topology change; mjData is reset by the caller afterwards.
+    let ok = unsafe {
+        robot_sim_write_object(
+            &mut **model,
+            &mut **data,
+            body.index() as i32,
+            geom.index() as i32,
+            values.as_ptr(),
+        )
+    };
+    if ok == 0 {
+        return Err(robotics_core::Error::Model("invalid object mapping".into()));
+    }
+    Ok(())
+}
+pub(crate) fn max_geom_priority(model: &mj::mjModel) -> i32 {
+    // SAFETY: read-only scan of a live model.
+    unsafe { robot_sim_max_geom_priority(&**model) }
+}

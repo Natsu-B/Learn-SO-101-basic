@@ -125,7 +125,18 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - **MP4生成済み**: `runs/video/pick_place_demo.mp4`（ffprobe実測 1280×720・30fps・1944フレーム・64.8秒・5.5MB）．6/6成功．ffmpeg必須の動画テストも2 passed，pytest全体144 passed．
 - `runs/so101-transport/`への書き込み，学習，コミット，pushは行っていない．
 
-未検証・未実装: PDFレポート，立方体yaw≠0，Grasp/Placeの学習．
+未知の物理特性（質量・摩擦）とGrasp学習（2026-10-31，詳細と全数値は [docs/OBJECT_PHYSICS.md](docs/OBJECT_PHYSICS.md)）:
+- 物体DR `ObjectRandomization`（reset時のみ，独立乱数，慣性スケール＋`mj_setConst`）．Python `set_object_randomization(mass=, friction=)` / `object_physics()`（ログ用の真値，`state()`には含めない）．
+- **SO-101ジョーは`priority=1`のため，既存シーンの立方体摩擦1.2はジョー接触に効いていなかった．** 摩擦DR時だけ立方体をpriority 2にしている．その結果，ジョー接触のcondimは6→4，テーブル接触のsolrefは0.015→0.01に変わる（`contact_probe`で実測）．
+- IK頑健性（870 episode）: 指定範囲0.02–0.05 kg・μ0.8–1.5では，Grasp・保持とも270/270．失敗するのはμ ≤ 0.1だけ（ジョー面が平行でないための押し出し．挟む力を変えても効かない）．
+- `GoalGraspEnv`（IKでClose直前まで進め，その後IK指令に残差を加える．履歴K=4のモデルBも同じ環境）を，0.02–0.1 kg・μ0.05–1.5で各150kステップ学習した（A/B×seed 42/7，`runs/so101-grasp/h{0,4}-seed-{42,7}/best.zip`）．
+- 最終比較（seed 3,000,000〜，各条件30回，`scripts/eval_grasp_comparison.sh`）: **学習残差は，IKにも固定のwrist_roll −0.1 radにも勝たなかった．** 難条件のGrasp成功: IK 174，固定 219，学習 150〜211（/300）．容易な条件の全工程成功は，IK 149 → 学習123〜143（/150）に低下した（傾いたまま低い位置で渡すためPlaceで失敗）．
+- 適応: 接触前の行動は条件によらず一致し，接触の1 step後に分かれる（観測した反応に応じて変えている）．ただし主にグリッパの残差に現れ，方向は学習seedごとに異なり，性能向上には結びつかなかった．
+- 球体（`shape="sphere"`）: 学習なしのIKでGrasp 30/30，Transport 30/30，Place 0/30（転がり）．独立した発展課題として扱う．
+- 動画 `runs/video/grasp_hidden_physics.mp4`（50.7秒，学習Grasp＋IK fallback，真の物理を画面に表示）．
+- 進行中: tilt罰付きv2（`runs/so101-grasp/v2-tilt-h{0,4}-seed-42`）．
+
+未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり）．
 
 ## 8. 次の作業（優先順）
 
@@ -150,3 +161,6 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - ログインシェルは **zsh**: `$VAR` に入れた複数パスは単語分割されない。複数ファイルを扱うスクリプトは配列か `bash` を使う。
 - `.venv` はリポジトリ移動前のパスを参照して壊れていたため再作成済み（旧環境は `.venv-old-moved-path/`）。
 - 既存checkpointは `runs/so101-reach-5mm/base-policy/best.zip`、`runs/so101-reach-hold/best.zip`（gitには含めない）。
+- `nix develop` のshellHookは `PYTHONPATH` を上書きする．別のビルドを使うときは `nix develop -c bash -c 'export PYTHONPATH=…; …'` の中で設定する．
+- 学習・評価のプロセスが editable の `_native*.so` を読み込んでいる間は `maturin develop` しない（実行中プロセスの.soを置き換えてしまう）．待てない場合は `maturin build -o DIR` ＋ `pip install --target` で別の場所にwheelを入れて使う．
+- 摩擦DRの下限は0.01（以前は0.05で，μ=0.03の評価が拒否された）．

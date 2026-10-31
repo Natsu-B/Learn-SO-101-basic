@@ -27,7 +27,7 @@ class FixedResidualPolicy:
 
     learned = False
 
-    def __init__(self, offset, *, gripper=0.0, horizon=75, gripper_scale=0.35):
+    def __init__(self, offset, *, gripper=0.0, horizon=75, gripper_scale=0.35, end_at=None):
         offset = np.asarray(offset, np.float64)
         if offset.shape != (5,) or not np.isfinite(offset).all():
             raise ValueError("offset must be five finite joint offsets")
@@ -37,14 +37,18 @@ class FixedResidualPolicy:
             raise ValueError("gripper offset exceeds gripper_scale")
         self.config = dict(history=0, horizon=horizon, arm_scale=self.arm_scale,
                            gripper_scale=gripper_scale)
+        # None keeps the original hand-off (end at the 0.3 s lift); "base" runs
+        # until the IK Grasp finishes its own Hold, like the v3 environment.
+        if end_at is not None:
+            self.config["end_at"] = end_at
 
     def predict(self, obs, deterministic=True):
         return self.action.copy(), None
 
 
-def wrist_roll_policy(radians):
+def wrist_roll_policy(radians, *, end_at=None):
     """Constant wrist_roll correction (joint index 4)."""
-    return FixedResidualPolicy([0, 0, 0, 0, radians])
+    return FixedResidualPolicy([0, 0, 0, 0, radians], end_at=end_at)
 
 
 def evaluate_grasp(model, env, *, conditions, seeds, emit=None):

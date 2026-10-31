@@ -55,9 +55,9 @@ Mac mini M1（aarch64-darwin）。すべて `nix develop` 内で実行する。
 nix develop                     # .venv があれば自動activate
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
-cargo test --workspace          # 2026-10-30 時点: 全件成功（既存44件 + pick_place 6件）
+cargo test --workspace          # 2026-10-31 時点: 58件成功
 maturin develop                 # Pythonテスト前に native extension を再ビルド
-pytest -q                       # 2026-10-30 時点: 96 passed
+pytest -q                       # 2026-10-31 時点: 166 passed
 
 # Pick & Place（IK版）評価: 引数 = エピソード数, 先頭seed。JSON lines を stdout、要約を stderr
 cargo run --release -p mujoco-runtime --example so101_pick_place -- 200 0
@@ -139,6 +139,14 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 見直し（docs/OBJECT_PHYSICS.md §11）: 学習Graspは，判定（30 mm・0.3 s）の時点で0.4 m/sで動き，傾いたまま渡していた．Transportの判定も速度条件がなく，IKでも0.12 m/sで終わる．Placeの失敗はすべて離した後の転倒で，ジョー内の傾きが原因である．IKの安定化（`stabilize`）を挟んでも回復しない．グリッパはLift/Holdで常に力制限に飽和している．
 - v3（`--reward v3`: 持ち上げの進捗，Hold終了まで実行，安定した受け渡しと後段IK成功を終端報酬にし，全工程成功率で選択．40kステップ）は容易な条件の低下を解消した（146〜149/150）．全工程合計（/570）は IK 240，固定wrist 253，v1 192〜237，v3 222〜235で，**学習は固定補正にもIKにも勝っていない**．
 
+接触物理の監査・手首補正・Place・低次元RL（2026-10-31，詳細と全数値は [docs/PHYSICS_AUDIT.md](docs/PHYSICS_AUDIT.md)）:
+- **接触環境が2つある**: `legacy`（従来．摩擦DRで立方体priority 2，condim/solrefも変わる）と`pairwise`（`PickPlaceSimulator(contact_model="pairwise")`，ジョー/テーブルの滑り摩擦を別々に書き，他は不変．DRなしでは従来とビット一致）．**結果を混ぜない．** v1〜v3・低次元RLはlegacyで学習．
+- 物理の問題: グリッパはストールトルク2.94 N·mで常時飽和（実機定格約1 N·m，片側39 N）．把持は指先の0.75 mm球だけで，めり込み1.3〜2.7 mm，軽いほど深い（soft contactの質量依存）．legacyの副作用だけで難条件IK全工程124→66/300．Grasp失敗はジョーとテーブルの摩擦が両方低いときに起きる．
+- 固定手首補正（7値×19条件，選択seed 4M/最終3M）: **オフセットの差はノイズと区別できない**（対応あり並べ替え検定 p=0.19〜0.96）．以前の「wrist −0.1が最良」は**受け渡しのタイミング**（0.3 s持ち上げ時点で渡す）の効果で，オフセット0でも同じ（難＋範囲外 103/420 vs IK 91）．
+- Place失敗: 主因は離した後に開くジョー・退避する手が立方体を倒すこと．`place="place_gentle"`（0.25 radまで開く）で学習Grasp後39→49/55，IK（ジョー低摩擦）40→52/56．静止待ちは効果なし，接地後に離すと悪化．既定のPlaceは変えていない．
+- 低次元Residual SAC（wrist 1-D / wrist+持ち上げ方向・速度 3-D，基準 IK+wrist −0.15，v3報酬，3万step）: legacy最終 245 / 242 vs 固定241・IK 240・v3 235（/570），pairwise 315 / 314 vs 311．**固定補正を上回らない（有意差なし）**．`runs/so101-grasp/lowdim-*`．
+- テスト: Rust 58件，pytest 166件成功（2026-10-31）．
+
 未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり），物理モデルの修正（別ブランチで行う）．
 
 ## 8. 次の作業（優先順）
@@ -154,6 +162,10 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 5. 余裕があれば Place / Grasp の学習、yawランダム化、質量・摩擦DR。
 
 ## 9. ハマりどころ（実測で判明済み）
+
+- M1は4P+4Eコア．評価を7並列にするとepisodeあたり数倍遅くなる（1 episode ≈ 0.5 s → 3 s）．並列6までにする．
+- JSONの`json!`はキーをアルファベット順に出す（`"type"`は行の最後）．行頭で種類を判定しない．
+- `PickPlaceSimulator`の変種skill（`place_gentle`など）は`on_step`に自分のskill名で通知される．
 
 - `gripperframe` は挟持中心ではない。site の **+x が指先方向、+z が固定ジョー→可動ジョー方向**。
   25mm立方体の中心は site 座標で約 (−6, 0.2, −8) mm（`PickPlaceSim::grasp_offset`）。

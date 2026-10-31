@@ -30,6 +30,11 @@ list() {
         done
         # The original baseline hand-off (end at the 0.3 s lift), for continuity.
         echo "legacy 3000000 $region wrist-success -0.10"
+      done
+      # Every offset on the final seeds where offsets matter (legacy), so a
+      # per-condition choice made on the selection seeds can be checked.
+      for region in hard out_of_range; do
+        for w in $wrists; do echo "legacy 3000000 $region wrist $w"; done
       done ;;
   esac
 }
@@ -54,4 +59,4 @@ run() {
 }
 export -f run
 export out easy hard out_of_range
-list | xargs -P "$jobs" -L 1 bash -c 'run "$@"' _
+list | awk '!seen[$0]++' | xargs -P "$jobs" -L 1 bash -c 'run "$@"' _

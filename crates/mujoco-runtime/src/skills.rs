@@ -87,6 +87,11 @@ pub trait Skill {
     fn learned(&self) -> bool {
         false
     }
+    /// Name of the internal phase, for skills that have one (diagnostics and
+    /// for starting learned skills from a scripted phase boundary).
+    fn phase(&self) -> Option<&'static str> {
+        None
+    }
     fn begin(&mut self, env: &PickPlaceSim) -> Result<()>;
     fn act(&mut self, env: &PickPlaceSim) -> Result<JointCommand>;
     fn status(&self, env: &PickPlaceSim) -> SkillStatus;
@@ -231,6 +236,15 @@ impl ScriptedGrasp {
 impl Skill for ScriptedGrasp {
     fn name(&self) -> &'static str {
         "grasp"
+    }
+    fn phase(&self) -> Option<&'static str> {
+        Some(match self.phase {
+            GraspPhase::Approach => "approach",
+            GraspPhase::Descend => "descend",
+            GraspPhase::Close => "close",
+            GraspPhase::Lift => "lift",
+            GraspPhase::Hold => "hold",
+        })
     }
     fn begin(&mut self, env: &PickPlaceSim) -> Result<()> {
         self.cube_start = env.cube_pose().0;

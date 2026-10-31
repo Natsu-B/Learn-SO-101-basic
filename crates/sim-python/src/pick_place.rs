@@ -71,6 +71,17 @@ impl ActiveSkill {
         }
         Ok(())
     }
+    /// Advance physics with an externally modified command (residual control);
+    /// the skill's own status is re-evaluated afterwards.
+    fn apply(&mut self, env: &mut PickPlaceSim, command: &JointCommand) -> Result<()> {
+        if self.status != SkillStatus::Running {
+            return Err(Error::Input("skill is not running".into()));
+        }
+        env.step(command, CONTROL_PERIOD)?;
+        self.steps += 1;
+        self.status = self.skill.status(env);
+        Ok(())
+    }
     fn report(&self) -> SkillReport {
         SkillReport {
             name: self.skill.name().into(),
@@ -277,6 +288,47 @@ impl PickPlaceSimulator {
         let dict = skill_dict(py, report)?;
         dict.set_item("status", status)?;
         Ok(dict)
+    }
+    /// Internal phase of the active skill (e.g. grasp: approach/descend/close/
+    /// lift/hold), or None for skills without phases.
+    fn skill_phase(&self, py: Python<'_>) -> PyResult<Option<&'static str>> {
+        self.session(py, |s| {
+            Ok(s.active
+                .as_ref()
+                .ok_or_else(|| Error::Input("start_skill first".into()))?
+                .skill
+                .phase())
+        })
+    }
+    /// The active skill's next command without stepping physics. Each call
+    /// advances the skill's internal set point; follow it with skill_apply().
+    fn skill_act(&self, py: Python<'_>) -> PyResult<Vec<f64>> {
+        self.session(py, |s| {
+            let skill = s
+                .active
+                .as_mut()
+                .ok_or_else(|| Error::Input("start_skill first".into()))?;
+            if skill.status != SkillStatus::Running {
+                return Err(Error::Input("skill is not running".into()));
+            }
+            Ok(skill.skill.act(&s.sim)?.position)
+        })
+    }
+    /// Step physics with a (possibly modified) command, keeping the skill active.
+    fn skill_apply<'py>(
+        &self,
+        py: Python<'py>,
+        position: Vec<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let snapshot = self.session(py, move |s| {
+            let skill = s
+                .active
+                .as_mut()
+                .ok_or_else(|| Error::Input("start_skill first".into()))?;
+            skill.apply(&mut s.sim, &JointCommand { position })?;
+            Ok(s.snapshot())
+        })?;
+        state_dict(py, snapshot)
     }
     #[pyo3(signature = (name, max_steps=None))]
     fn run_skill<'py>(

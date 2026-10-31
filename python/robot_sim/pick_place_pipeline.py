@@ -97,7 +97,8 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
     reset); both attempts are reported and the fallback is ``learned=False``.
     ``stabilize`` inserts the scripted Stabilize skill (IK: carry height, wait
     until still) between a successful Grasp and Transport; it is reported as
-    its own skill and counts toward overall success.
+    its own skill and counts toward overall success. ``stabilize="best_effort"``
+    proceeds after the time limit if the cube is still lifted.
 
     ``skill_end_states`` records height, speed, tilt, gripper angle and cube
     offset in the jaws after every attempted skill (true state, logs only).
@@ -159,7 +160,9 @@ def run_pick_place_episode(seed, *, model=None, transport="learned", sim=None,
             reports.append(scripted("grasp"))
             end_states.append(skill_end_state(sim, "grasp"))
         if reports[-1]["success"] and stabilize:
-            reports.append(scripted("stabilize"))
+            reports.append(scripted("stabilize_best_effort" if stabilize == "best_effort"
+                                    else "stabilize"))
+            reports[-1]["name"] = "stabilize"
             end_states.append(skill_end_state(sim, "stabilize"))
         if reports[-1]["success"]:
             if transport == "scripted":

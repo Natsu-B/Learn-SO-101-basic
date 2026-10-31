@@ -94,8 +94,9 @@ def main():
     parser.add_argument("--grasp-model", help="residual Grasp checkpoint (best.zip)")
     parser.add_argument("--fixed-wrist-roll", type=float,
                         help="non-learned baseline: IK Grasp + constant wrist_roll offset (rad)")
-    parser.add_argument("--stabilize", action="store_true",
-                        help="insert the IK Stabilize skill after a successful Grasp")
+    parser.add_argument("--stabilize", nargs="?", const="strict", choices=("strict", "best_effort"),
+                        help="insert the IK Stabilize skill after a successful Grasp "
+                             "(best_effort: proceed after its time limit if still lifted)")
     parser.add_argument("--grasp-fallback", action="store_true",
                         help="run the IK Grasp after a failed learned Grasp")
     args = parser.parse_args()
@@ -129,8 +130,8 @@ def main():
         if args.region in ("out", "both"):
             grids.append(("out", OUT_OF_RANGE))
     if args.stabilize:
-        grasp_options["stabilize"] = True
-        controller += " + IK stabilize"
+        grasp_options["stabilize"] = True if args.stabilize == "strict" else "best_effort"
+        controller += f" + IK stabilize ({args.stabilize})"
     seeds = range(args.seed, args.seed + args.episodes)
     sim = PickPlaceSimulator(shape=args.shape)
     try:

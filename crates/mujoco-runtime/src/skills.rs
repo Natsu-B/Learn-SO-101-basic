@@ -503,6 +503,9 @@ pub struct ScriptedStabilize {
     pub rest_speed: f64,
     pub rest_steps: usize,
     pub max_steps: usize,
+    /// On timeout, succeed if the cube is still lifted (the bridge only buys
+    /// time); otherwise a timeout is a failure.
+    pub best_effort: bool,
 }
 impl ScriptedStabilize {
     pub fn new(criteria: Criteria) -> Self {
@@ -516,6 +519,7 @@ impl ScriptedStabilize {
             rest_speed: 0.02,
             rest_steps: 5,
             max_steps: 60,
+            best_effort: false,
         }
     }
 }
@@ -557,7 +561,11 @@ impl Skill for ScriptedStabilize {
         } else if predicates::dropped(env) {
             SkillStatus::Failure("dropped".into())
         } else if self.steps >= self.max_steps {
-            SkillStatus::Failure("timeout".into())
+            if self.best_effort && predicates::lifted(env, &self.criteria) {
+                SkillStatus::Success
+            } else {
+                SkillStatus::Failure("timeout".into())
+            }
         } else {
             SkillStatus::Running
         }

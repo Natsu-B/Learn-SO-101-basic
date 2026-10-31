@@ -50,8 +50,9 @@ impl ActiveSkill {
                 }
                 Box::new(skill)
             }
-            "stabilize" => {
+            "stabilize" | "stabilize_best_effort" => {
                 let mut skill = ScriptedStabilize::new(criteria);
+                skill.best_effort = name == "stabilize_best_effort";
                 if let Some(n) = max_steps {
                     skill.max_steps = n;
                 }

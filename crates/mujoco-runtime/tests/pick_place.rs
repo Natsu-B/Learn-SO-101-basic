@@ -153,3 +153,31 @@ fn scripted_pick_and_place_succeeds_across_seeds_by_contact_only() {
         assert!(predicates::placed(&pp, &criteria));
     }
 }
+
+#[test]
+fn stabilize_after_grasp_settles_cube_at_carry_height() {
+    use mujoco_runtime::skills::ScriptedStabilize;
+    let mut pp = env();
+    for best_effort in [false, true] {
+        assert_eq!(run_grasp(&mut pp, 0, false), SkillStatus::Success);
+        let mut s = ScriptedStabilize::new(Criteria::default());
+        s.best_effort = best_effort;
+        s.begin(&pp).unwrap();
+        while s.status(&pp) == SkillStatus::Running {
+            let c = s.act(&pp).unwrap();
+            pp.step(&c, CONTROL_PERIOD).unwrap();
+        }
+        assert_eq!(s.status(&pp), SkillStatus::Success);
+        let st = pp.state();
+        let half = pp.config().cube_half;
+        assert!(st.contacts.pinched() && (st.cube_position[2] - half - 0.08).abs() < 0.01);
+        assert!(
+            st.cube_linear_velocity
+                .iter()
+                .map(|v| v * v)
+                .sum::<f64>()
+                .sqrt()
+                < 0.02
+        );
+    }
+}

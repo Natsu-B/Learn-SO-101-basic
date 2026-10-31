@@ -570,6 +570,45 @@ impl PickPlaceSim {
         out
     }
 
+    /// Normal contact forces on the object (N, summed per partner) and the
+    /// gripper actuator force against its force range. Diagnostic only.
+    pub fn grip_forces(&self) -> Result<GripForces> {
+        let m = &self.sim.model;
+        let d = &self.sim.data;
+        let mut out = GripForces::default();
+        for (i, c) in d.contact().iter().enumerate() {
+            let (Some(a), Some(b)) = c.geom() else {
+                continue;
+            };
+            let other = if a == self.cube_geom {
+                b
+            } else if b == self.cube_geom {
+                a
+            } else {
+                continue;
+            };
+            let normal = mj::mj_contactForce(m, d, i)[0];
+            let body = m.geom_bodyid(other);
+            if other == self.table_geom {
+                out.table_normal += normal;
+            } else if body == self.fixed_jaw_body {
+                out.fixed_jaw_normal += normal;
+            } else if body == self.moving_jaw_body {
+                out.moving_jaw_normal += normal;
+            }
+        }
+        let name = &self.sim.actuator_names()[GRIPPER];
+        let actuator = m
+            .object_id::<obj::Actuator>(name)
+            .ok_or_else(|| Error::Model(format!("missing actuator {name}")))?;
+        // SAFETY: matching model/data; read-only slice of nu entries.
+        out.gripper_actuator_force = unsafe { d.actuator_force(m) }[actuator.index()];
+        if let Some(r) = m.actuator_forcerange(actuator) {
+            out.gripper_force_range = [r.start, r.end];
+        }
+        Ok(out)
+    }
+
     pub fn state(&self) -> PickPlaceState {
         let js = self.sim.state();
         let (gp, ga) = self.gripper_pose();
@@ -745,6 +784,16 @@ pub struct ContactParameters {
     pub solreffriction: [f64; 2],
     pub solimp: [f64; 5],
     pub includemargin: f64,
+}
+
+/// See `PickPlaceSim::grip_forces`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct GripForces {
+    pub fixed_jaw_normal: f64,
+    pub moving_jaw_normal: f64,
+    pub table_normal: f64,
+    pub gripper_actuator_force: f64,
+    pub gripper_force_range: [f64; 2],
 }
 
 /// IK goal for the pinch centre. `axis_weight` converts axis error (rad) to metres.

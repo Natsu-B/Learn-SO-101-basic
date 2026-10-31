@@ -9,7 +9,7 @@ use mujoco_runtime::{
     presets,
     skills::{
         self, CONTROL_PERIOD, Criteria, EpisodeReport, ScriptedGrasp, ScriptedPlace,
-        ScriptedTransport, Skill, SkillReport, SkillStatus, predicates,
+        ScriptedStabilize, ScriptedTransport, Skill, SkillReport, SkillStatus, predicates,
     },
 };
 use pyo3::{
@@ -50,9 +50,16 @@ impl ActiveSkill {
                 }
                 Box::new(skill)
             }
+            "stabilize" => {
+                let mut skill = ScriptedStabilize::new(criteria);
+                if let Some(n) = max_steps {
+                    skill.max_steps = n;
+                }
+                Box::new(skill)
+            }
             _ => {
                 return Err(Error::Input(
-                    "skill must be grasp, transport or place".into(),
+                    "skill must be grasp, stabilize, transport or place".into(),
                 ));
             }
         };
@@ -230,6 +237,20 @@ impl PickPlaceSimulator {
         d.set_item("mass_range", r.mass.map(|v| v.to_vec()))?;
         d.set_item("friction_range", r.friction.map(|v| v.to_vec()))?;
         Ok(d)
+    }
+    /// Diagnostic contact/actuator forces (N, N·m); for logs, not policy input.
+    fn grip_forces(&self, py: Python<'_>) -> PyResult<HashMap<&'static str, f64>> {
+        self.session(py, |s| {
+            let f = s.sim.grip_forces()?;
+            Ok(HashMap::from([
+                ("fixed_jaw_normal", f.fixed_jaw_normal),
+                ("moving_jaw_normal", f.moving_jaw_normal),
+                ("table_normal", f.table_normal),
+                ("gripper_actuator_force", f.gripper_actuator_force),
+                ("gripper_force_min", f.gripper_force_range[0]),
+                ("gripper_force_max", f.gripper_force_range[1]),
+            ]))
+        })
     }
     fn action_bounds(&self, py: Python<'_>) -> PyResult<Vec<[f64; 2]>> {
         self.session(py, |s| Ok(s.sim.sim.action_bounds()))

@@ -488,6 +488,82 @@ impl Skill for ScriptedPlace {
     }
 }
 
+// ------------------------------------------------------------ Stabilize
+/// Short IK bridge after a (learned) Grasp: keep the pinch, move the cube to
+/// the scripted Grasp's carry height above its current XY, and wait until it
+/// is still. Hands Transport the same kind of state the IK Grasp would.
+pub struct ScriptedStabilize {
+    criteria: Criteria,
+    motion: Option<Motion>,
+    goal: [f64; 3],
+    steps: usize,
+    still: usize,
+    pub carry_height: f64,
+    /// Cube speed (m/s) and consecutive steps that count as settled.
+    pub rest_speed: f64,
+    pub rest_steps: usize,
+    pub max_steps: usize,
+}
+impl ScriptedStabilize {
+    pub fn new(criteria: Criteria) -> Self {
+        Self {
+            criteria,
+            motion: None,
+            goal: [0.; 3],
+            steps: 0,
+            still: 0,
+            carry_height: ScriptedGrasp::new(Criteria::default()).carry_height,
+            rest_speed: 0.02,
+            rest_steps: 5,
+            max_steps: 60,
+        }
+    }
+}
+impl Skill for ScriptedStabilize {
+    fn name(&self) -> &'static str {
+        "stabilize"
+    }
+    fn begin(&mut self, env: &PickPlaceSim) -> Result<()> {
+        let s = env.state();
+        let offset = sub(s.cube_position, s.gripper_position);
+        let cube_goal = [
+            s.cube_position[0],
+            s.cube_position[1],
+            env.config().cube_half + self.carry_height,
+        ];
+        self.goal = sub(cube_goal, offset);
+        self.motion = Some(Motion::new(env, None));
+        self.steps = 0;
+        self.still = 0;
+        Ok(())
+    }
+    fn act(&mut self, env: &PickPlaceSim) -> Result<JointCommand> {
+        self.steps += 1;
+        let motion = self.motion.as_mut().expect("begin() first");
+        motion.speed = 0.10;
+        let command = motion.track(env, self.goal, GRIPPER_CLOSED)?;
+        let arrived = motion.arrived(env, self.goal, 0.01);
+        let v = env.cube_velocity();
+        if arrived && norm([v[0], v[1], v[2]]) < self.rest_speed {
+            self.still += 1;
+        } else {
+            self.still = 0;
+        }
+        Ok(command)
+    }
+    fn status(&self, env: &PickPlaceSim) -> SkillStatus {
+        if self.still >= self.rest_steps && predicates::lifted(env, &self.criteria) {
+            SkillStatus::Success
+        } else if predicates::dropped(env) {
+            SkillStatus::Failure("dropped".into())
+        } else if self.steps >= self.max_steps {
+            SkillStatus::Failure("timeout".into())
+        } else {
+            SkillStatus::Running
+        }
+    }
+}
+
 // ------------------------------------------------------------ Sequencer
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillReport {

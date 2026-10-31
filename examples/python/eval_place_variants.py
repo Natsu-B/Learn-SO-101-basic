@@ -78,7 +78,8 @@ def main():
                                  release_z=None, release_tilt=None, grip=None)
 
                     def on_step(state, name, learned):
-                        if name != "place":
+                        # Variants report their own skill name (place_level, ...).
+                        if not name.startswith("place"):
                             return
                         jaw = [c for c in sim.contact_details() if c["partner"].endswith("jaw")]
                         if track["grip"] is None:

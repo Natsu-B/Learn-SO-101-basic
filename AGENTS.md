@@ -57,7 +57,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets
 cargo test --workspace          # 2026-11-01 時点: 66件成功
 maturin develop                 # Pythonテスト前に native extension を再ビルド
-pytest -q                       # 2026-11-01 時点: 178 passed
+pytest -q                       # 2026-11-01 時点: 181 passed
 
 # Pick & Place（IK版）評価: 引数 = エピソード数, 先頭seed。JSON lines を stdout、要約を stderr
 cargo run --release -p mujoco-runtime --example so101_pick_place -- 200 0
@@ -162,6 +162,9 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 失敗の分解（FORCE_CONTROL.md §10，`runs/force-grasp-eval/diag2-200`）: グリッパ単独の安全把持の成功は力PI 16.5%・二段階PI 18.5%・P1 15.0%・P8 17.0%（45%が非接触）・P9（接触獲得を達成条件にした報酬）19.0%．潰れの大半は目標力の前の押し渡し中（可動ジョーが物体を固定ジョーへ押す間に面が最大圧縮）．ゆっくり押しても36%で起き，グリッパ単独制御の限界と判断．
   - 腕の把持方向の微小補正（`ForceGraspSim::shift_arm`，`ArmAssistPi`，別実験）で成功44.0%・物体移動1.8 mm・潰れ20%．次のRL候補は行動に腕補正を加えたPPO（未実施）．
   - テスト: Rust 66件，pytest 178件成功．
+- 腕＋グリッパの協調PPO（FORCE_CONTROL.md §11，`runs/force-grasp-coop/`）: `action_mode="arm_gripper"`（2次元）/ `"arm_pi"`（腕のみ学習，グリッパはPI），報酬`coop_safe`（両ジョー接触中のみ追従報酬，接触+20，潰れ・無効接触−10，最終成功+50，非接触−20），最終成功率でbestを選択．
+  - 最終評価200試行の安全把持成功: P9 19.0%，腕補正PI 44.0%，P10（2次元，50万step）67.5%，P11（腕のみ学習）72.0%，**P10b（2次元，100万stepまで延長）92.0%**（final.zipは78.5%．チェックポイント間の揺れが大きい）．腕補正PIに対しp ≤ 8e-7．
+  - テスト: Rust 66件，pytest 181件成功．
 
 未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり），物理モデルの修正（別ブランチで行う）．
 

@@ -555,3 +555,133 @@ python scripts/analyze_force_grasp_failures.py runs/force-grasp-eval/diag2-200/e
 python examples/python/train_force_grasp_ppo.py --output runs/force-grasp-ppo/p9-contact-safe-0.5m-s42 \
   --steps 500000 --eval-freq 49152 --checkpoint-freq 98304 --no-bias --alpha-obj 0 0 --reward contact_safe
 ```
+
+## 11. 腕とグリッパの協調制御を学習する2次元PPO（2026-11-01）
+
+目的は，§10.6の腕補正PI（安全把持の成功率44.0%）を学習で上回れるかを確かめることである．論文の再現とは別の独自拡張で，新しい出力はすべて `runs/force-grasp-coop/` にある．P1〜P9と以前の評価には書き込んでいない．
+
+### 11.1 環境（`ForceGraspConfig.action_mode`）
+
+| action_mode | 行動 | 備考 |
+|---|---|---|
+| `gripper` | [グリッパ位置の増減] | 既定値．P1〜P9と同じで，観測・報酬・挙動は変えていない |
+| `arm_gripper`（P10） | [グリッパ位置の増減，腕の把持方向の移動] | 2次元PPO |
+| `arm_pi`（P11） | [腕の把持方向の移動] | グリッパは腕補正PIと同じスクリプトの力制御則（`ArmAssistPi(drive_arm=False)`）．学習が必要な自由度を切り分けるための構成 |
+
+- **腕の移動**: 既存の`shift_arm`を使う．1周期あたり最大0.4 mm（12 mm/s，腕補正PIと同じ速度），累積0〜12 mm．IK目標の高さは変えないのでテーブルには近づかない．関節範囲はIKが守る．
+- **確認（smoke test）**:
+  - 腕だけを20周期動かすと，指令8.00 mmに対し，挟持中心の実測移動は8.00 mm（グリッパ角の変化0.0006 rad）．
+  - グリッパだけを10周期動かすと，角度が−0.260 rad変化し，腕は8.01 mmのまま．
+  - Rustの読み値に`arm_shift`（指令）と`pinch_offset`（実測の移動量）を加えた（既存の計測出力はバイト単位で一致）．
+- **観測**: 既存の10次元に6次元を加え，3フレームを並べる（計48次元）．加えたのは，腕補正の指令値・実測値・実測速度，直前の腕の行動，現在の接触状態2つ．直前のグリッパ行動と接触フラグは既存．物体の剛性・摩擦・質量は観測しない．
+- 帰納バイアスはなし，高速配置．
+
+### 11.2 報酬 `coop_safe`
+
+| 項 | 値 | ねらい |
+|---|---|---|
+| track | 1 − tanh(Σ\|Δf_i\|/f_goal)，**両ジョーが今接触しているときだけ** | 非接触で低い力を出すだけでは得られない |
+| hold | +0.5（両ジョー接触かつ平均力の誤差 ≤ max(0.1·f_goal, 0.05 N)） | 接触を維持した安定把持 |
+| contact | 両ジョーの接触を初めて獲得したとき +20（1回） | 接触獲得の達成条件（P9と同じ） |
+| crush | 最初に最大圧縮へ達したとき −10（1回） | 潰れの回避 |
+| invalid | めり込みが1 mmを超えたとき −10（1回） | 無効接触の回避 |
+| overload | P9と同じ固定スケール（5 N）の過負荷 × 5，合計 ≥ −10 | 目標力で割らない |
+| act / arm_act | −0.2·\|Δa\|（グリッパ・腕それぞれ） | 滑らかさ |
+| terminal | 終了時に最終成功（評価と同じ判定）なら +50．一度も両ジョー接触がなければ −20 | 安全把持の成功．接触を避けると損をする |
+
+各項は重みを掛けた後の寄与で`info["reward_terms"]`に記録し，エピソード合計を`progress.csv`の`reward_terms/*`と`selection.jsonl`に残している．
+P10（50万step時点）の選択用seedでの平均寄与（1エピソードあたり）: track 107.5，hold 62.8，contact 20.0，terminal 34.4，act −0.6，arm_act −0.6，invalid −0.2，overload −0.1，crush 0.0．
+開いたままの方策は，track = 0・terminal = −20で合計は負になる（テストで確認）．
+
+### 11.3 学習（選択用seed 7,000,000〜7,000,047の48試行で，最終成功率によりbestを選択）
+
+PPOの設定はP1と同じ（6環境，n_steps 1024，[50, 50]，lr 6e-4）．
+
+| run | 構成 | step | 所要時間 | best（選択用seedの成功率） |
+|---|---|---|---|---|
+| smoke-arm-gripper / smoke-arm-pi | 動作確認 | 3,072 | 2.5 s / 3.5 s | — |
+| P10 p10-arm-gripper-0.5m-s42 | 2次元PPO | 503,808 | 338 s | 29.5万stepで0.750 |
+| P11 p11-arm-pi-0.5m-s42 | 腕のみ学習＋PI | 503,808 | 326 s | 9.8万stepで0.729 |
+| P10b p10b-arm-gripper-resume-to-1m | P10のfinal.zipから延長 | 計1,007,616 | 320 s | 70.0万stepで0.896 |
+
+![協調制御の学習曲線](results/force_grasp_coop_curves.png)
+
+- P10は約20万stepで選択用成功率0.65〜0.75に達した．ベースラインに対して明確に改善したため，P10だけを100万stepまで延長した（P10b）．
+- 選択用成功率は**揺れが大きい**（P10bで0.15〜0.90，P11で0.25〜0.73）．48試行の揺れの大きい曲線の最大値でbestを選ぶので，選択用seedでの値は楽観的になる．性能は最終評価seedで判断する．
+
+### 11.4 比較（最終評価seed 8,000,000〜8,000,199，同じ物体・目標力・ノイズ）
+
+`runs/force-grasp-coop/eval-final-200`（P9・腕補正PI・P10・P11），`eval-final-200-p10b`（P10bのbestとfinal，`analysis_all.md`は全手法の合算）．
+
+| 指標（200試行） | P9（グリッパ単独PPO） | 腕補正PI | P10（2次元PPO） | P11（腕のみ学習＋PI） | **P10b（2次元PPO，延長）** | P10b final.zip |
+|---|---|---|---|---|---|---|
+| **最終成功率（全試行）** | 19.0% | 44.0% | 67.5% | 72.0% | **92.0%** | 78.5% |
+| 両ジョー接触の獲得 | 100% | 100% | 100% | 100% | 100% | 100% |
+| 目標力到達（一度でも） | 92.0% | 95.5% | 97.5% | 97.5% | — | — |
+| 潰れ率 | 66.0% | 20.0% | 1.5% | 13.5% | 1.5% | 2.0% |
+| 無効接触率 | 34.5% | 21.5% | 15.0% | 16.5% | 5.5% | 7.0% |
+| 接触喪失（最後の1 s） | 4.5% | 3.0% | 2.5% | 2.5% | 1.5% | 1.0% |
+| 物体移動 | 7.7 mm | 1.8 mm | 0.8 mm | 1.0 mm | 1.1 mm | 1.3 mm |
+| 安定把持までの時間 / 到達数 | 1.82 s / 176 | 2.08 s / 188 | 1.35 s / 196 | 2.01 s / 190 | 1.55 s / 194 | 1.49 s / 197 |
+| ピーク力（両ジョー接触・有効接触の試行）: 試行数 / 中央値 / P95 / 最大 | 131 / 11.38 / 45.22 / 50.3 N | 157 / 2.47 / 8.41 / 13.1 N | 170 / 2.27 / 6.39 / 8.7 N | 167 / 2.05 / 6.18 / 15.7 N | 189 / 2.17 / 8.20 / 9.9 N | 186 / 2.32 / 7.83 / 11.2 N |
+| ピーク力の最大（全試行，無効接触を含む） | 617 N | 563 N | 957 N | 444 N | 272 N | 296 N |
+
+最初に失敗した段階（200試行，排他的）:
+
+| 原因 | P9 | 腕補正PI | P10 | P11 | P10b | P10b final |
+|---|---|---|---|---|---|---|
+| 無効接触 | 69 | 43 | 30 | 33 | 11 | 14 |
+| 潰れ | 89 | 32 | 3 | 19 | 1 | 3 |
+| 接触喪失 | 1 | 2 | 4 | 1 | 2 | 1 |
+| 目標力未達 | 3 | 35 | 28 | 3 | 2 | 25 |
+| 成功 | 38 | 88 | 135 | 144 | 184 | 157 |
+
+同じseedでの成否の対応（McNemarの正確検定）:
+
+| A vs B | 両方成功 | Aのみ成功 | Bのみ成功 | p |
+|---|---|---|---|---|
+| 腕補正PI vs P10 | 66 | 22 | 69 | 8.2e-07 |
+| 腕補正PI vs P11 | 83 | 5 | 61 | 2.6e-13 |
+| 腕補正PI vs P10b | 84 | 4 | 100 | 4.7e-25 |
+| P10 vs P11 | 106 | 29 | 38 | 0.33 |
+| P10 vs P10b | 131 | 4 | 53 | 5.9e-12 |
+| P11 vs P10b | 139 | 5 | 45 | 4.2e-09 |
+| P10b best vs P10b final | 152 | 32 | 5 | 7.4e-06 |
+
+### 11.5 結論
+
+- **腕とグリッパの協調を学習したPPOは，腕補正PIを上回った．** 最終評価seedでの成功率は，P10が67.5%，P11が72.0%，P10bが92.0%で，どれも腕補正PI（44.0%）より有意に高い（p ≤ 8e-7）．
+- 学習で減ったのは，腕補正PIで残っていた失敗である．
+  - 潰れ: 32 → 1件（P10b）．
+  - 目標力未達: 35 → 2件（P10b）．柔らかい物体での保持中の潰れと，ゲインが合わない目標未達．
+  - 無効接触（硬い物体の衝突時）: 43 → 11件（P10b）．
+- 腕だけを学習してグリッパはPIのP11と，2次元のP10は，同じ50万stepでは差がない（p = 0.33）．自由度を切り分けると，**改善の大部分は腕の動かし方（固定ジョーを物体へ寄せる時機と速さ）を学習したことによる**．P11は把持力をPIに任せるため，柔らかい物体の潰れが残る（19件）．
+- 100万stepに延長したP10bの選択用最良チェックポイントは92.0%だが，同じrunのfinal.zipは78.5%（差は有意，p = 7e-6）．**学習はまだ安定しておらず，チェックポイントの選び方で成績が大きく変わる**．
+- 有効接触の試行に限ったピーク力（中央値約2 N，P95 6〜8 N）は腕補正PIと同程度で，成功率の改善はピーク力の低下よりも，潰れ・無効接触・目標未達の減少から来ている．
+- 限界:
+  - 学習seedは42のみ．
+  - 選択用seed 48試行による選択の揺れ．
+  - 力の観測はシミュレーションの仮想センサ．
+  - 腕の補正は把持方向の水平移動だけ．
+  - 無効接触（数値的なめり込み）の物理モデルは未修正．
+  - P11の学習中に1回，MuJoCoが不安定を報告した（`MUJOCO_LOG.TXT`: DOF 9（物体の自由関節）のQACCがNaN，t = 3.11 s）．環境はシミュレーションのエラーをterminatedとして扱うので，そのエピソードだけが打ち切られた．評価中には起きていない．
+  - IKでの持ち上げと，破損しきい値付きPick & Placeは未実施．
+
+再現:
+
+```bash
+C=runs/force-grasp-coop
+python examples/python/train_force_grasp_ppo.py --output $C/p10-arm-gripper-0.5m-s42 --steps 500000 \
+  --eval-freq 49152 --eval-episodes 48 --checkpoint-freq 98304 --no-bias --alpha-obj 0 0 \
+  --reward coop_safe --action-mode arm_gripper --select success
+python examples/python/train_force_grasp_ppo.py --output $C/p11-arm-pi-0.5m-s42 ...（同じ，--action-mode arm_pi）
+python examples/python/train_force_grasp_ppo.py --output $C/p10b-arm-gripper-resume-to-1m ...（同じ，--resume $C/p10-arm-gripper-0.5m-s42/final.zip）
+python examples/python/eval_force_grasp.py --output $C/eval-final-200 --episodes 200 \
+  --controllers ppo:P9=runs/force-grasp-ppo/p9-contact-safe-0.5m-s42/best.zip \
+  armpi:push_ramp=0.5,push_speed=0.3,push_ratio=0.8,shift_speed=0.012 \
+  ppo:P10=$C/p10-arm-gripper-0.5m-s42/best.zip ppo:P11=$C/p11-arm-pi-0.5m-s42/best.zip
+python examples/python/eval_force_grasp.py --output $C/eval-final-200-p10b --episodes 200 \
+  --controllers ppo:P10b=$C/p10b-arm-gripper-resume-to-1m/best.zip ppo:P10b_final=$C/p10b-arm-gripper-resume-to-1m/final.zip
+python scripts/analyze_force_grasp_failures.py $C/eval-final-200/episodes.jsonl $C/eval-final-200-p10b/episodes.jsonl
+uv run --no-project --with matplotlib python scripts/plot_force_grasp_curves.py docs/results/force_grasp_coop_curves.png --coop P10=... P10b=... P11=...
+```

@@ -14,7 +14,7 @@
 //! the gripper is commanded. The scripted lift reuses `ScriptedGrasp`.
 //! Reimplemented from the paper's description (Lach et al., IROS 2024,
 //! arXiv:2311.07245); no code from github.com/llach/learning_fc is copied.
-use crate::pick_place::{GRIPPER, PickPlaceConfig, PickPlaceSim};
+use crate::pick_place::{GRIPPER, IkTarget, PickPlaceConfig, PickPlaceSim};
 use crate::skills::{CONTROL_PERIOD, Criteria, ScriptedGrasp, Skill};
 use crate::{model_access, presets};
 use robotics_core::{Error, JointCommand, Result};
@@ -39,6 +39,18 @@ pub const PLATE_MASS: f64 = 0.102;
 /// wider objects or smaller gaps can (docs/FORCE_CONTROL.md §3).
 pub const FIXED_JAW_BASE_GAP: f64 = -0.001;
 const SKINS: [&str; 4] = ["skin_px", "skin_nx", "skin_py", "skin_ny"];
+
+/// How `ForceGraspSim::reset` brings the open gripper around the object.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Positioning {
+    /// Run the scripted Grasp approach and descent (default; docs §3–4).
+    #[default]
+    Scripted,
+    /// Solve the same descent target by IK once and place the arm there at
+    /// rest (reset-time state, ~20x faster; used for RL training).
+    Teleport,
+}
 
 /// Physical properties of one compliant object. Hidden from the policy.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -95,6 +107,11 @@ impl CompliantObject {
     pub fn max_spring_force(&self) -> f64 {
         self.stiffness * self.travel
     }
+    /// Goal-force interval the object can bear: [f_min, min(0.8 k·travel,
+    /// f_cap)], as the paper samples f_goal below f_max(kappa).
+    pub fn goal_range(&self, f_min: f64, f_cap: f64) -> [f64; 2] {
+        [f_min, (0.8 * self.max_spring_force()).min(f_cap).max(f_min)]
+    }
 }
 
 /// Uniform sampling ranges. `kappa` interpolates log-stiffness between
@@ -112,6 +129,9 @@ pub struct ForceGraspRanges {
     pub travel: [f64; 2],
     pub friction: [f64; 2],
     pub mass: [f64; 2],
+    /// Gripper joint damping scale (the SO-101 counterpart of the paper's
+    /// actuator bias b2 randomization). Default: nominal.
+    pub gripper_damping_scale: [f64; 2],
 }
 impl Default for ForceGraspRanges {
     fn default() -> Self {
@@ -124,10 +144,16 @@ impl Default for ForceGraspRanges {
             travel: [0.003, 0.006],
             friction: [0.3, 1.5],
             mass: [0.01, 0.1],
+            gripper_damping_scale: [1., 1.],
         }
     }
 }
 impl ForceGraspRanges {
+    pub fn sample_gripper_damping(&self, seed: u64) -> f64 {
+        let mut rng = seed ^ 0xda4b_0000_5ca1_e000;
+        let [lo, hi] = self.gripper_damping_scale;
+        lo + (hi - lo) * uniform(&mut rng)
+    }
     pub fn stiffness_at(&self, kappa: f64) -> f64 {
         let [hard, soft] = self.stiffness;
         (hard.ln() + kappa * (soft.ln() - hard.ln())).exp()
@@ -222,6 +248,9 @@ pub struct ForceGraspSim {
     start: [f64; 3],
     /// Object displacement while the arm was positioned (m).
     pub positioning_displacement: f64,
+    /// Gripper damping scale of this episode.
+    pub gripper_damping_scale: f64,
+    pub positioning: Positioning,
 }
 
 impl ForceGraspSim {
@@ -279,6 +308,8 @@ impl ForceGraspSim {
             closing: [1., 0., 0.],
             start: [0.; 3],
             positioning_displacement: 0.,
+            gripper_damping_scale: 1.,
+            positioning: Positioning::Scripted,
         };
         this.apply_object(CompliantObject::nominal())?;
         Ok(this)
@@ -349,12 +380,41 @@ impl ForceGraspSim {
     pub fn reset(&mut self, seed: u64, object: Option<CompliantObject>) -> Result<()> {
         let o = object.unwrap_or_else(|| self.ranges.sample(seed));
         self.apply_object(o)?;
+        let scale = self.ranges.sample_gripper_damping(seed);
+        let mut p = self.pp.sim.parameters().clone();
+        p.joint_damping_scale[GRIPPER] = scale;
+        self.pp.sim.set_parameter_center(p)?;
+        self.gripper_damping_scale = scale;
         self.pp.reset(seed)?;
         let start = self.pp.cube_pose().0;
-        let mut g = ScriptedGrasp::new(Criteria::default());
         // The scripted descent is calibrated for a 25 mm cube: shift the fixed
         // jaw by the extra half width plus the requested gap.
-        g.jaw_clearance = (0.5 * o.width - 0.0125) + o.gap - FIXED_JAW_BASE_GAP;
+        let clearance = (0.5 * o.width - 0.0125) + o.gap - FIXED_JAW_BASE_GAP;
+        let command = match self.positioning {
+            Positioning::Scripted => self.position_scripted(clearance)?,
+            Positioning::Teleport => self.position_teleport(start, clearance)?,
+        };
+        self.arm_command = command;
+        self.closing = self.pp.closing_direction();
+        let core = self.pp.cube_pose().0;
+        let gx = self.geom_positions();
+        let along = |i: usize| {
+            (0..3)
+                .map(|k| (gx[i][k] - core[k]) * self.closing[k])
+                .sum::<f64>()
+        };
+        let order = |a: &usize, b: &usize| along(*a).total_cmp(&along(*b));
+        self.sides = [
+            (0..4).min_by(order).expect("four skins"),
+            (0..4).max_by(order).expect("four skins"),
+        ];
+        self.start = core;
+        self.positioning_displacement = (core[0] - start[0]).hypot(core[1] - start[1]);
+        Ok(())
+    }
+    fn position_scripted(&mut self, clearance: f64) -> Result<JointCommand> {
+        let mut g = ScriptedGrasp::new(Criteria::default());
+        g.jaw_clearance = clearance;
         g.begin(&self.pp)?;
         let mut command = g.act(&self.pp)?;
         while g.phase() != Some("close") {
@@ -374,23 +434,34 @@ impl ForceGraspSim {
         for _ in 0..10 {
             self.pp.step(&command, CONTROL_PERIOD)?;
         }
-        self.arm_command = command;
-        self.closing = self.pp.closing_direction();
-        let core = self.pp.cube_pose().0;
-        let gx = self.geom_positions();
-        let along = |i: usize| {
-            (0..3)
-                .map(|k| (gx[i][k] - core[k]) * self.closing[k])
-                .sum::<f64>()
-        };
-        let order = |a: &usize, b: &usize| along(*a).total_cmp(&along(*b));
-        self.sides = [
-            (0..4).min_by(order).expect("four skins"),
-            (0..4).max_by(order).expect("four skins"),
+        Ok(command)
+    }
+    /// Same targets as the scripted Grasp (approach closing direction, descent
+    /// point shifted by `clearance` away from the fixed jaw), solved once.
+    fn position_teleport(&mut self, cube: [f64; 3], clearance: f64) -> Result<JointCommand> {
+        let above = [cube[0], cube[1], cube[2] + 0.06];
+        let closing = crate::skills::grasp_closing(&self.pp, above)?;
+        let q0 = self.pp.sim.applied_command().position.clone();
+        let (q_above, _) = self
+            .pp
+            .solve_ik(&q0, &IkTarget::top_down(above, Some(closing)), 200)?;
+        let z = self.pp.fk_closing(&q_above)?;
+        let h = z[0].hypot(z[1]).max(1e-9);
+        let target = [
+            cube[0] - clearance * z[0] / h,
+            cube[1] - clearance * z[1] / h,
+            cube[2],
         ];
-        self.start = core;
-        self.positioning_displacement = (core[0] - start[0]).hypot(core[1] - start[1]);
-        Ok(())
+        let (mut q, _) =
+            self.pp
+                .solve_ik(&q_above, &IkTarget::top_down(target, Some(closing)), 200)?;
+        q[GRIPPER] = crate::skills::GRIPPER_OPEN;
+        self.pp.sim.teleport(&q)?;
+        let command = JointCommand { position: q };
+        for _ in 0..10 {
+            self.pp.step(&command, CONTROL_PERIOD)?;
+        }
+        Ok(command)
     }
     fn geom_positions(&self) -> [[f64; 3]; 4] {
         let m = &self.pp.sim.model;
@@ -406,14 +477,43 @@ impl ForceGraspSim {
         self.pp.sim.action_bounds()[GRIPPER]
     }
     /// One control period with the arm frozen and the given gripper target.
-    pub fn step(&mut self, gripper: f64) -> Result<()> {
+    /// Returns the extremes over its physics steps.
+    pub fn step(&mut self, gripper: f64) -> Result<StepStats> {
         if !gripper.is_finite() {
             return Err(Error::Input("non-finite gripper command".into()));
         }
         let [lo, hi] = self.gripper_bounds();
         let mut c = self.arm_command.clone();
         c.position[GRIPPER] = gripper.clamp(lo, hi);
-        self.pp.step(&c, CONTROL_PERIOD)
+        let probe = self.probe();
+        let travel = self.object.travel;
+        let gripper_actuator = self.pp.sim.actuator_ids()[GRIPPER];
+        let mut st = StepStats {
+            min_jaw_force: [f64::INFINITY; 2],
+            ..StepStats::default()
+        };
+        self.pp
+            .sim
+            .step_control_observed(&c, CONTROL_PERIOD, |sim| {
+                let scan = probe.scan(&sim.model, &sim.data);
+                st.physics_steps += 1;
+                for k in 0..2 {
+                    st.max_jaw_force[k] = st.max_jaw_force[k].max(scan.jaw_force[k]);
+                    st.min_jaw_force[k] = st.min_jaw_force[k].min(scan.jaw_force[k]);
+                    st.max_rigid_force[k] = st.max_rigid_force[k].max(scan.rigid_force[k]);
+                    st.max_deformation[k] = st.max_deformation[k].max(scan.deformation[k]);
+                    st.bottomed[k] |= scan.deformation[k] >= travel - BOTTOM_TOLERANCE;
+                }
+                st.max_penetration = st.max_penetration.max(scan.penetration);
+                // SAFETY: matching model/data, read-only slice of nu entries.
+                let tau = unsafe { sim.data.actuator_force(&sim.model) }[gripper_actuator];
+                st.max_actuator_torque = st.max_actuator_torque.max(tau.abs());
+            })?;
+        let (p, _) = self.pp.cube_pose();
+        if !p.iter().all(|v| v.is_finite()) {
+            return Err(Error::Unstable);
+        }
+        Ok(st)
     }
     /// Arm command frozen at reset (gripper entry is the opening command).
     pub fn arm_command(&self) -> &JointCommand {
@@ -471,50 +571,35 @@ impl ForceGraspSim {
             .collect()
     }
 
+    fn probe(&self) -> Probe {
+        Probe {
+            core_geom: self.core_geom,
+            column_geom: self.column_geom,
+            skin_geoms: self.skin_geoms,
+            skin_joints: self.skin_joints,
+            fixed_jaw_body: self.fixed_jaw_body,
+            moving_jaw_body: self.moving_jaw_body,
+            table_geom: self.pp.table_geom(),
+            sides: self.sides,
+        }
+    }
+
     pub fn reading(&self) -> Result<ForceReading> {
         let m = &self.pp.sim.model;
         let d = &self.pp.sim.data;
-        let mut r = ForceReading::default();
-        for (i, c) in d.contact().iter().enumerate() {
-            let (Some(a), Some(b)) = c.geom() else {
-                continue;
-            };
-            let is_object = |g: ObjectId<obj::Geom>| {
-                g == self.core_geom || g == self.column_geom || self.skin_geoms.contains(&g)
-            };
-            let (own, other) = if is_object(a) {
-                (a, b)
-            } else if is_object(b) {
-                (b, a)
-            } else {
-                continue;
-            };
-            let normal = mj::mj_contactForce(m, d, i)[0];
-            if other == self.pp.table_geom() {
-                r.table_force += normal;
-                continue;
-            }
-            let body = m.geom_bodyid(other);
-            let side = if body == self.fixed_jaw_body {
-                0
-            } else if body == self.moving_jaw_body {
-                1
-            } else {
-                continue;
-            };
-            r.penetration = r.penetration.max(-c.dist());
-            if own == self.skin_geoms[self.sides[side]] {
-                r.jaw_force[side] += normal;
-            } else {
-                r.rigid_force[side] += normal;
-            }
-        }
-        for (side, &s) in self.sides.iter().enumerate() {
-            let q = d.qpos(self.skin_joints[s], m)[0];
-            let v = d.qvel(self.skin_joints[s], m)[0];
-            r.deformation[side] = q;
-            r.bottomed[side] = q >= self.object.travel - 1e-5;
-            r.spring_force[side] = self.object.stiffness * q + self.object.damping * v;
+        let scan = self.probe().scan(m, d);
+        let mut r = ForceReading {
+            jaw_force: scan.jaw_force,
+            rigid_force: scan.rigid_force,
+            table_force: scan.table_force,
+            penetration: scan.penetration,
+            deformation: scan.deformation,
+            ..ForceReading::default()
+        };
+        for side in 0..2 {
+            r.bottomed[side] = scan.deformation[side] >= self.object.travel - BOTTOM_TOLERANCE;
+            r.spring_force[side] = self.object.stiffness * scan.deformation[side]
+                + self.object.damping * scan.deformation_rate[side];
         }
         let js = self.pp.sim.state();
         let f = self.pp.grip_forces()?;
@@ -536,6 +621,91 @@ impl ForceGraspSim {
         r.fixed_face_shift = towards_fixed - r.deformation[0];
         Ok(r)
     }
+}
+
+const BOTTOM_TOLERANCE: f64 = 1e-5;
+
+/// Object/jaw element ids for contact scans (copyable, so that a scan can run
+/// inside the per-physics-step hook while the simulator is borrowed).
+#[derive(Clone, Copy)]
+struct Probe {
+    core_geom: ObjectId<obj::Geom>,
+    column_geom: ObjectId<obj::Geom>,
+    skin_geoms: [ObjectId<obj::Geom>; 4],
+    skin_joints: [ObjectId<joint::Slide>; 4],
+    fixed_jaw_body: ObjectId<obj::Body>,
+    moving_jaw_body: ObjectId<obj::Body>,
+    table_geom: ObjectId<obj::Geom>,
+    sides: [usize; 2],
+}
+#[derive(Default)]
+struct Scan {
+    jaw_force: [f64; 2],
+    rigid_force: [f64; 2],
+    table_force: f64,
+    penetration: f64,
+    deformation: [f64; 2],
+    deformation_rate: [f64; 2],
+}
+impl Probe {
+    fn scan(&self, m: &mj::mjModel, d: &mj::mjData) -> Scan {
+        let mut r = Scan::default();
+        let is_object = |g: ObjectId<obj::Geom>| {
+            g == self.core_geom || g == self.column_geom || self.skin_geoms.contains(&g)
+        };
+        for (i, c) in d.contact().iter().enumerate() {
+            let (Some(a), Some(b)) = c.geom() else {
+                continue;
+            };
+            let (own, other) = if is_object(a) {
+                (a, b)
+            } else if is_object(b) {
+                (b, a)
+            } else {
+                continue;
+            };
+            let normal = mj::mj_contactForce(m, d, i)[0];
+            if other == self.table_geom {
+                r.table_force += normal;
+                continue;
+            }
+            let body = m.geom_bodyid(other);
+            let side = if body == self.fixed_jaw_body {
+                0
+            } else if body == self.moving_jaw_body {
+                1
+            } else {
+                continue;
+            };
+            r.penetration = r.penetration.max(-c.dist());
+            if own == self.skin_geoms[self.sides[side]] {
+                r.jaw_force[side] += normal;
+            } else {
+                r.rigid_force[side] += normal;
+            }
+        }
+        for (side, &s) in self.sides.iter().enumerate() {
+            r.deformation[side] = d.qpos(self.skin_joints[s], m)[0];
+            r.deformation_rate[side] = d.qvel(self.skin_joints[s], m)[0];
+        }
+        r
+    }
+}
+
+/// Extremes over the physics steps (5 ms) of one control period, so that
+/// impact peaks between control samples are not missed. Index 0 = fixed jaw.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct StepStats {
+    pub physics_steps: usize,
+    /// Largest normal force on the grasped faces and on anything else.
+    pub max_jaw_force: [f64; 2],
+    pub max_rigid_force: [f64; 2],
+    /// Smallest face force (contact lost within the period if ~0).
+    pub min_jaw_force: [f64; 2],
+    pub max_deformation: [f64; 2],
+    pub bottomed: [bool; 2],
+    pub max_penetration: f64,
+    pub max_actuator_torque: f64,
 }
 
 /// Hand-designed grasp force controller after the structure of Lach et al.

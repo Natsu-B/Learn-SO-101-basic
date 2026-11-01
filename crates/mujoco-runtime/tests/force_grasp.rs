@@ -1,6 +1,6 @@
 //! Compliant-object grasp-force environment (docs/FORCE_CONTROL.md §3–4).
 use mujoco_runtime::force_grasp::{
-    CompliantObject, ForceGraspRanges, ForceGraspSim, ForcePi, PENETRATION_LIMIT,
+    CompliantObject, ForceGraspRanges, ForceGraspSim, ForcePi, PENETRATION_LIMIT, Positioning,
 };
 use mujoco_runtime::pick_place::{PickPlaceConfig, PickPlaceSim, SCENE_TEMPLATE};
 use mujoco_runtime::presets;
@@ -161,4 +161,30 @@ fn force_pi_tracks_the_goal_without_crushing() {
         );
         assert!(!e.reading().unwrap().bottomed.iter().any(|b| *b));
     }
+}
+
+#[test]
+fn teleport_positioning_matches_the_scripted_gap_and_step_stats_cover_physics_steps() {
+    let mut pushes = Vec::new();
+    for positioning in [Positioning::Scripted, Positioning::Teleport] {
+        let mut e = env();
+        e.positioning = positioning;
+        let o = CompliantObject {
+            stiffness: 5000.,
+            travel: 0.003,
+            ..CompliantObject::nominal()
+        };
+        e.reset(7_000_000, Some(o)).unwrap();
+        assert!(e.positioning_displacement < 0.1e-3);
+        pinch(&mut e);
+        pushes.push(e.reading().unwrap().object_displacement);
+        let st = e.step(-0.17).unwrap();
+        let r = e.reading().unwrap();
+        assert!(matches!(st.physics_steps, 6 | 7));
+        for side in 0..2 {
+            assert!(st.max_jaw_force[side] >= r.jaw_force[side] - 1e-12);
+            assert!(st.min_jaw_force[side] <= r.jaw_force[side] + 1e-12);
+        }
+    }
+    assert!((pushes[0] - pushes[1]).abs() < 0.5e-3, "gap {pushes:?}");
 }

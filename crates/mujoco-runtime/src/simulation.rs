@@ -303,6 +303,25 @@ impl Simulator {
         self.reset_data()
     }
 
+    /// Reset-time only: place the actuated joints at `position` at rest, hold
+    /// it as the position target, and drop queued commands. Time and other
+    /// bodies are unchanged.
+    pub fn teleport(&mut self, position: &[f64]) -> Result<()> {
+        let command = JointCommand {
+            position: position.to_vec(),
+        };
+        self.validate_command(&command)?;
+        for (mapping, q) in self.joints.iter().zip(position) {
+            self.data.set_qpos(mapping.joint, [*q], &self.model);
+            self.data.set_qvel(mapping.joint, [0.], &self.model);
+            self.data.set_ctrl(mapping.actuator, *q);
+        }
+        mj::mj_forward(&self.model, &mut self.data);
+        self.command_queue.clear();
+        self.applied_command = command;
+        self.capture_observation()
+    }
+
     /// Restore model qpos0, velocity, time and solver state. Set position targets
     /// to qpos0 before forwarding the model.
     pub fn reset(&mut self) -> Result<()> {
@@ -403,6 +422,16 @@ impl Simulator {
     /// uses compensated addition, while physics scheduling uses integer ticks.
     /// Observed time overshoots the ideal deadline by less than one physics tick.
     pub fn step_control(&mut self, command: &JointCommand, period: f64) -> Result<JointState> {
+        self.step_control_observed(command, period, |_| {})
+    }
+    /// `step_control` that calls `each` after every physics step (for
+    /// sub-control-period measurements such as contact-force peaks).
+    pub fn step_control_observed(
+        &mut self,
+        command: &JointCommand,
+        period: f64,
+        mut each: impl FnMut(&Self),
+    ) -> Result<JointState> {
         self.validate_command(command)?;
         if !period.is_finite() || period <= 0.0 || !(self.control_deadline + period).is_finite() {
             return Err(Error::Input(
@@ -418,6 +447,7 @@ impl Simulator {
             < self.control_deadline
         {
             self.advance_physics()?;
+            each(self);
         }
         Ok(self.state())
     }

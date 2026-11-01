@@ -229,7 +229,7 @@ fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Cube face normal (horizontal) closest to the arm's natural closing direction.
-fn grasp_closing(env: &PickPlaceSim, above: [f64; 3]) -> Result<[f64; 3]> {
+pub(crate) fn grasp_closing(env: &PickPlaceSim, above: [f64; 3]) -> Result<[f64; 3]> {
     let q0 = env.sim.applied_command().position.clone();
     let (q, _) = env.solve_ik(&q0, &IkTarget::top_down(above, None), 200)?;
     // Closing direction of the unconstrained top-down solution.

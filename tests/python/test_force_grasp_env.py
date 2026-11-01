@@ -177,3 +177,49 @@ def test_contact_safe_reward_never_pays_for_avoiding_contact():
             assert terms["overload"] >= -e.config.safe_overload_clip
             assert terms["crush"] >= -e.config.crush_penalty
     assert totals[-1.0] > totals[1.0]
+
+
+@pytest.mark.parametrize("mode,n_act", [("arm_gripper", 2), ("arm_pi", 1)])
+def test_arm_action_modes_move_the_arm_and_keep_limits(mode, n_act):
+    from robot_sim.force_grasp_env import ARM_FRAME_EXTRA
+
+    e = ForceGraspEnv(ForceGraspConfig(action_mode=mode, inductive_bias=False, reward="coop_safe",
+                                       max_steps=60))
+    e.set_progress(1.0)
+    try:
+        obs, _ = e.reset(options={"episode_seed": 7_000_001})
+        assert obs.shape == ((FRAME_SIZE + ARM_FRAME_EXTRA) * 3,)
+        assert e.action_space.shape == (n_act,)
+        arm = [0.0, 1.0] if n_act == 2 else [1.0]
+        for _ in range(40):
+            obs, _, _, _, info = e.step(arm)
+        r = e._reading
+        lo, hi = e.config.arm_shift_range
+        assert r["arm_shift"] == pytest.approx(hi, abs=1e-9), "12 mm cap"
+        assert r["pinch_offset"] == pytest.approx(hi, abs=1e-3), "the arm really moved"
+        terms = info["reward_terms"]
+        assert {"track", "hold", "contact", "crush", "invalid", "overload"} <= set(terms)
+        assert info["stats"] is not None
+    finally:
+        e.close()
+    with pytest.raises(ValueError):
+        ForceGraspConfig(action_mode="arm_gripper", inductive_bias=True).validate()
+
+
+def test_coop_reward_never_pays_for_staying_open():
+    e = ForceGraspEnv(ForceGraspConfig(action_mode="arm_gripper", inductive_bias=False,
+                                       reward="coop_safe"))
+    e.set_progress(1.0)
+    try:
+        e.reset(options={"episode_seed": 7_000_002})
+        total, done = 0.0, False
+        while not done:
+            _, r, te, tr, info = e.step([1.0, 0.0])  # open, arm still
+            total += r
+            done = te or tr
+        m = info["episode_metrics"]
+        assert m["reward_terms"]["track"] == 0.0, "no tracking reward without both jaws"
+        assert m["reward_terms"]["terminal"] == -e.config.contact_bonus
+        assert total < 0
+    finally:
+        e.close()

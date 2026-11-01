@@ -38,7 +38,9 @@ except ImportError as error:  # pragma: no cover
 from ._native import CONTROL_PERIOD, GRIPPER_CLOSED, GRIPPER_OPEN, ForceGraspSimulator
 
 FRAME_SIZE = 10
-REWARDS = ("paper", "paper_peak", "contact_safe")
+REWARDS = ("paper", "paper_peak", "contact_safe", "coop_safe")
+ACTION_MODES = ("gripper", "arm_gripper", "arm_pi")
+ARM_FRAME_EXTRA = 6
 
 
 def _lerp(a, b, t):
@@ -116,10 +118,32 @@ class ForceGraspConfig:
     safe_overload_weight: float = 5.0
     safe_overload_clip: float = 2.0
     crush_penalty: float = 5.0
+    # Arm + gripper cooperation (docs §11). "gripper": the paper's 1-D task
+    # (default, unchanged). "arm_gripper": 2-D [gripper delta, arm shift
+    # delta]. "arm_pi": 1-D arm shift delta, gripper by the scripted force
+    # law of ArmAssistPi. The arm shift moves the pinch target horizontally
+    # along the closing direction (ForceGraspSimulator.shift_arm), limited
+    # to arm_step_max per period and arm_shift_range in total; the target
+    # height is unchanged (no table approach) and the IK keeps joint limits.
+    action_mode: str = "gripper"
+    arm_step_max: float = 0.0004  # m per period = 12 mm/s
+    arm_shift_range: tuple[float, float] = (0.0, 0.012)
+    # coop_safe reward (docs §11.2): tracking only while both jaws touch,
+    # hold bonus, one-time contact bonus / crush / invalid penalties,
+    # P9's absolute overload term, terminal success bonus and no-contact
+    # penalty.
+    hold_bonus: float = 0.5
+    invalid_penalty: float = 10.0
+    coop_crush_penalty: float = 10.0
+    success_bonus: float = 50.0
 
     def validate(self) -> None:
         if self.reward not in REWARDS:
             raise ValueError(f"reward must be one of {REWARDS}")
+        if self.action_mode not in ACTION_MODES:
+            raise ValueError(f"action_mode must be one of {ACTION_MODES}")
+        if self.action_mode != "gripper" and (self.positioning != "teleport" or self.inductive_bias):
+            raise ValueError("arm action modes need teleport positioning and no inductive bias")
         if self.peak_mode not in ("step", "max"):
             raise ValueError("peak_mode must be step or max")
         if self.force_reward_norm not in ("goal", "none"):
@@ -151,6 +175,7 @@ class EpisodeMetrics:
     actions: list = field(default_factory=list)
     commands: list = field(default_factory=list)
     torques: list = field(default_factory=list)
+    term_sums: dict = field(default_factory=dict)
     travel: float = 1.0
 
     def summary(self, threshold: float, penetration_limit: float, window: int = 30) -> dict[str, Any]:
@@ -255,6 +280,7 @@ class EpisodeMetrics:
             "return": float(np.sum(self.rewards)),
             "action_saturation": float(np.mean(np.abs(self.actions) >= 0.999)) if self.actions else 0.0,
             "torque_saturation": float(np.mean(self.torques)) if self.torques else 0.0,
+            "reward_terms": dict(self.term_sums),
         }
 
 
@@ -267,9 +293,16 @@ class ForceGraspEnv(gym.Env):
         self.config.validate()
         self.sim = sim or ForceGraspSimulator(positioning=self.config.positioning)
         c = self.config
-        dim = FRAME_SIZE * c.frame_stack
+        self.arm = c.action_mode != "gripper"
+        frame = FRAME_SIZE + (ARM_FRAME_EXTRA if self.arm else 0)
+        dim = frame * c.frame_stack
         self.observation_space = spaces.Box(-np.inf, np.inf, (dim,), np.float32)
-        self.action_space = spaces.Box(-1.0, 1.0, (1,), np.float32)
+        n_act = 2 if c.action_mode == "arm_gripper" else 1
+        self.action_space = spaces.Box(-1.0, 1.0, (n_act,), np.float32)
+        self._gripper_law = None
+        if c.action_mode == "arm_pi":
+            self._gripper_law = ArmAssistPi(drive_arm=False, push_ramp=0.5, push_speed=0.3,
+                                            push_ratio=0.8)
         self.q_low = float(self.sim.gripper_bounds()[0])
         self.q_high = GRIPPER_OPEN
         self.penetration_limit = ForceGraspSimulator.penetration_limit
@@ -321,6 +354,14 @@ class ForceGraspEnv(gym.Env):
         self.prev_action = 0.0  # applied (after the inductive bias)
         self.prev_raw_action = None
         self._max_over = 0.0
+        self.arm_shift = 0.0
+        self.prev_arm_action = 0.0
+        self._arm_raw = 0.0
+        self._last_pinch = reading["pinch_offset"]
+        self.pinch_speed = 0.0
+        self._once: set = set()
+        if self._gripper_law is not None:
+            self._gripper_law.reset()
         self._contact_rewarded = False
         self._crush_charged = False
         self.steps = 0
@@ -335,11 +376,31 @@ class ForceGraspEnv(gym.Env):
         return self._obs(), self._info(reading, None)
 
     def step(self, action):
+        if self.arm:
+            return self._step_arm(action)
         a = float(np.clip(np.asarray(action, dtype=float).reshape(-1)[0], -1.0, 1.0))
         phi = self.bias() if self.config.inductive_bias else 1.0
         applied = phi * a
         q_des = self.q_obs + applied * self.config.dq_max
         return self._advance(q_des, a, applied)
+
+    def _step_arm(self, action):
+        c = self.config
+        a = np.clip(np.asarray(action, dtype=float).reshape(-1), -1.0, 1.0)
+        a_arm = float(a[-1])
+        lo, hi = c.arm_shift_range
+        shift = float(np.clip(self.arm_shift + a_arm * c.arm_step_max, lo, hi))
+        if abs(shift - self.arm_shift) > 1e-9:
+            self.sim.shift_arm(shift)
+            self.arm_shift = shift
+        self._arm_raw = a_arm
+        if c.action_mode == "arm_gripper":
+            raw = float(a[0])
+            q_des = self.q_obs + raw * c.dq_max
+        else:
+            raw = 0.0
+            q_des = self._gripper_law(self)
+        return self._advance(q_des, raw, raw)
 
     def step_command(self, q_des: float, raw_action: float = 0.0):
         """Baselines: advance with an absolute gripper target through the same
@@ -398,9 +459,20 @@ class ForceGraspEnv(gym.Env):
         v = self.qvel_obs / (c.dq_max / CONTROL_PERIOD)
         f = self.f_obs / c.force_scale
         df = (self.goal - self.f_obs) / c.force_scale
-        return np.array(
+        base = np.array(
             [q, v, f[0], f[1], df[0], df[1], self.goal / c.force_scale, self.prev_action,
              *self.had_contact.astype(float)],
+            dtype=np.float32,
+        )
+        return np.concatenate([base, self._arm_frame()]) if self.arm else base
+
+    def _arm_frame(self) -> np.ndarray:
+        c = self.config
+        span = c.arm_shift_range[1]
+        now = (self.f_obs > c.contact_threshold).astype(float)
+        return np.array(
+            [self.arm_shift / span, self._reading["pinch_offset"] / span,
+             self.pinch_speed / (c.arm_step_max / CONTROL_PERIOD), self.prev_arm_action, *now],
             dtype=np.float32,
         )
 
@@ -425,7 +497,13 @@ class ForceGraspEnv(gym.Env):
         # horizontal motion of the core is along the pinch.
         speed = float(np.hypot(*(pos - self._last_pos)[:2])) / CONTROL_PERIOD
         self._last_pos = pos
+        if self.arm:
+            pinch = reading["pinch_offset"]
+            self.pinch_speed = (pinch - self._last_pinch) / CONTROL_PERIOD
+            self._last_pinch = pinch
         reward, terms = self._reward(raw, stats, speed)
+        if self.arm:
+            self.prev_arm_action = self._arm_raw
         self.prev_action = applied
         self.prev_raw_action = raw
         self.steps += 1
@@ -440,10 +518,24 @@ class ForceGraspEnv(gym.Env):
         m.commands.append(q_des)
         m.torques.append(stats["max_actuator_torque"] >= 0.999 * reading["torque_limit"])
         truncated = self.steps >= c.max_steps
+        if truncated and c.reward == "coop_safe":
+            # Terminal terms from the same summary the evaluation uses.
+            summary = m.summary(c.contact_threshold, self.penetration_limit)
+            r_end = c.success_bonus if summary["success"] else 0.0
+            if summary["contact_step"] is None:
+                r_end -= c.contact_bonus
+            terms["terminal"] = r_end
+            reward += r_end
+            m.rewards[-1] = reward
+        for k, v in terms.items():
+            m.term_sums[k] = m.term_sums.get(k, 0.0) + v
         info = self._info(reading, stats)
         info["reward_terms"] = terms
         if truncated:
             info["episode_metrics"] = m.summary(c.contact_threshold, self.penetration_limit)
+            if self.arm:
+                info["episode_metrics"]["final_arm_shift_mm"] = 1e3 * self.arm_shift
+                info["episode_metrics"]["final_pinch_offset_mm"] = 1e3 * reading["pinch_offset"]
         return self._obs(), reward, False, truncated, info
 
     def _reward(self, raw: float, stats, speed: float):
@@ -466,6 +558,34 @@ class ForceGraspEnv(gym.Env):
                 r_peak = -over
             terms["peak"] = float(r_peak)
             reward += self.peak_weight * r_peak
+        if c.reward == "coop_safe":
+            both_now = bool((self.f_obs > c.contact_threshold).all())
+            tol = max(0.1 * self.goal, 0.05)
+            r_track = float(r_force) if both_now else 0.0
+            r_hold = c.hold_bonus if both_now and abs(self.f_obs.mean() - self.goal) <= tol else 0.0
+            r_act2 = -abs(self._arm_raw - self.prev_arm_action) if self.arm else 0.0
+            peak = max(stats["max_jaw_force"])
+            limit = max(1.5 * self.goal, self.goal + 1.0)
+            over = min(max(0.0, peak - limit) / c.safe_force_scale, c.safe_overload_clip)
+            r_over = -max(0.0, over - self._max_over)
+            self._max_over = max(self._max_over, over)
+            r_contact = 0.0
+            if self.had_contact.all() and "contact" not in self._once:
+                self._once.add("contact")
+                r_contact = c.contact_bonus
+            r_crush = r_invalid = 0.0
+            if any(stats["bottomed"]) and "crush" not in self._once:
+                self._once.add("crush")
+                r_crush = -c.coop_crush_penalty
+            if stats["max_penetration"] > self.penetration_limit and "invalid" not in self._once:
+                self._once.add("invalid")
+                r_invalid = -c.invalid_penalty
+            # Weighted contributions (they sum to the reward).
+            terms = {"track": c.alpha_force * r_track, "hold": r_hold,
+                     "act": c.alpha_act * float(r_act), "arm_act": c.alpha_act * r_act2,
+                     "overload": c.safe_overload_weight * float(r_over), "contact": r_contact,
+                     "crush": r_crush, "invalid": r_invalid}
+            return float(sum(terms.values())), terms
         if c.reward == "contact_safe":
             peak = max(stats["max_jaw_force"])
             limit = max(1.5 * self.goal, self.goal + 1.0)
@@ -575,9 +695,11 @@ class ArmAssistPi(TwoStagePi):
     and the force PI takes over. Needs teleport positioning.
     """
 
-    def __init__(self, shift_speed=0.006, light_ratio=0.5, light_max=0.3, **kw):
+    def __init__(self, shift_speed=0.006, light_ratio=0.5, light_max=0.3, drive_arm=True, **kw):
         super().__init__(**kw)
         self.shift_speed, self.light_ratio, self.light_max = shift_speed, light_ratio, light_max
+        # drive_arm=False: gripper law only (the arm_pi action mode moves the arm).
+        self.drive_arm = drive_arm
 
     def reset(self):
         super().reset()
@@ -586,9 +708,10 @@ class ArmAssistPi(TwoStagePi):
     def __call__(self, env: ForceGraspEnv) -> float:
         h = env.had_contact
         if h[1] and not h[0]:
-            limit = 0.012
-            self.shift = min(limit, self.shift + self.shift_speed * CONTROL_PERIOD)
-            env.sim.shift_arm(self.shift)
+            if self.drive_arm:
+                limit = 0.012
+                self.shift = min(limit, self.shift + self.shift_speed * CONTROL_PERIOD)
+                env.sim.shift_arm(self.shift)
             ref = min(self.light_ratio * env.goal, self.light_max)
             scale = float(np.clip((ref - float(env.f_obs[1])) / ref, -1.0, 1.0))
             d = -scale * self.push_speed * CONTROL_PERIOD

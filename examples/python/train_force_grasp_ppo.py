@@ -24,7 +24,11 @@ def main():
     p.add_argument("--eval-freq", type=int, default=10_000)
     p.add_argument("--eval-episodes", type=int, default=24)
     p.add_argument("--checkpoint-freq", type=int, default=10_000)
-    p.add_argument("--reward", choices=("paper", "paper_peak", "contact_safe"), default="paper")
+    p.add_argument("--reward", choices=("paper", "paper_peak", "contact_safe", "coop_safe"),
+                   default="paper")
+    p.add_argument("--action-mode", choices=("gripper", "arm_gripper", "arm_pi"), default="gripper")
+    p.add_argument("--select", choices=("return", "success"), default="return",
+                   help="checkpoint selection on the selection seeds")
     p.add_argument("--no-bias", action="store_true", help="disable the inductive bias")
     p.add_argument("--peak-weight", type=float, default=1.0)
     p.add_argument("--peak-margin", type=float, default=0.5)
@@ -40,6 +44,7 @@ def main():
     config = ForceGraspConfig(reward=a.reward, inductive_bias=not a.no_bias,
                               peak_weight=a.peak_weight, peak_margin=a.peak_margin,
                               peak_mode=a.peak_mode, peak_weight_start=a.peak_weight_start,
+                              action_mode=a.action_mode,
                               alpha_obj=tuple(a.alpha_obj),
                               bias_single_moving=a.bias_single_moving)
     summary = train_force_grasp(
@@ -47,7 +52,7 @@ def main():
         batch_size=a.batch_size, learning_rate=a.learning_rate,
         curriculum_fraction=a.curriculum_fraction, eval_freq=a.eval_freq,
         eval_episodes=a.eval_episodes, checkpoint_freq=a.checkpoint_freq, config=config,
-        resume=a.resume)
+        resume=a.resume, select=a.select)
     print(json.dumps(summary))
 
 

@@ -2,7 +2,9 @@
 
 Small multiples over training timesteps, from each run's selection.jsonl
 (deterministic policy on the 24 checkpoint-selection seeds 7,000,000+).
-Usage: python scripts/plot_force_grasp_curves.py OUT.png NAME=RUN_DIR ...
+Usage: python scripts/plot_force_grasp_curves.py OUT.png [--coop] NAME=RUN_DIR ...
+--coop plots the final safe-grasp success rate and valid-contact peak force
+(docs §11) instead of the return and all-episode peak.
 """
 import json
 import sys
@@ -25,9 +27,21 @@ PANELS = [
 ]
 
 
+COOP_PANELS = [
+    ("success", "安全把持の成功率（選択用seed）", (0, 1)),
+    ("mean_abs_error", "力の平均誤差 [N]（最後の1 s）", None),
+    ("peak_force_valid_mean", "ピーク法線力 [N]（有効接触の試行）", None),
+    ("crushed", "潰れ率", (0, 1)),
+]
+
+
 def main():
     out = sys.argv[1]
-    runs = [a.split("=", 1) for a in sys.argv[2:]]
+    args = sys.argv[2:]
+    panels = PANELS
+    if args and args[0] == "--coop":
+        panels, args = COOP_PANELS, args[1:]
+    runs = [a.split("=", 1) for a in args]
     plt.rcParams.update({"font.size": 9, "axes.edgecolor": "#52514e", "axes.labelcolor": "#0b0b0b",
                          "xtick.color": "#52514e", "ytick.color": "#52514e"})
     for family in ("Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP"):
@@ -35,7 +49,7 @@ def main():
             plt.rcParams["font.family"] = family
             break
     fig, axes = plt.subplots(2, 2, figsize=(10, 6.4), facecolor="#fcfcfb")
-    for ax, (key, title, ylim) in zip(axes.flat, PANELS):
+    for ax, (key, title, ylim) in zip(axes.flat, panels):
         ax.set_facecolor("#fcfcfb")
         for i, (name, run) in enumerate(runs):
             rows = [json.loads(l) for l in (Path(run) / "selection.jsonl").read_text().splitlines()]
@@ -55,7 +69,7 @@ def main():
         if ylim:
             ax.set_ylim(*ylim)
         ax.set_xlabel("学習ステップ [M]")
-    axes[0, 0].legend(frameon=False, loc="lower right")
+    axes[0, 0].legend(frameon=False, loc="lower right" if panels is PANELS else "upper left")
     fig.tight_layout()
     fig.savefig(out, dpi=140, facecolor=fig.get_facecolor())
 

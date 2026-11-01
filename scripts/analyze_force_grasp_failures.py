@@ -5,7 +5,8 @@ the success funnel, the exclusive first failure cause, valid-contact peak
 force distributions, and success / failure cause / crush phase by kappa and
 by face capacity k·travel.
 
-  python scripts/analyze_force_grasp_failures.py runs/force-grasp-eval/diag-200/episodes.jsonl
+  python scripts/analyze_force_grasp_failures.py EPISODES.jsonl [MORE.jsonl ...]
+(several files with the same seeds are merged by controller name).
 """
 import json
 import math
@@ -50,8 +51,36 @@ def table(header, rows):
     return "\n".join(out)
 
 
+def sign_test(b, c):
+    """Exact two-sided binomial (McNemar) p-value for b vs c discordant pairs."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    p = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return min(1.0, 2 * p)
+
+
+def paired(by, names):
+    """Same-seed success pairing between every two controllers."""
+    print("\n### 同じseedでの成否の対応（A行 vs B列: 両方成功 / Aのみ / Bのみ / McNemar p）\n")
+    out = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            sa = {r["seed"]: r["success"] for r in by[a]}
+            sb = {r["seed"]: r["success"] for r in by[b]}
+            seeds = sorted(set(sa) & set(sb))
+            both = sum(sa[s] and sb[s] for s in seeds)
+            only_a = sum(sa[s] and not sb[s] for s in seeds)
+            only_b = sum(sb[s] and not sa[s] for s in seeds)
+            out.append([a, b, len(seeds), both, only_a, only_b, f"{sign_test(only_a, only_b):.3g}"])
+    print(table(["A", "B", "seed数", "両方成功", "Aのみ成功", "Bのみ成功", "p"], out))
+
+
 def main():
-    rows = [json.loads(l) for l in open(sys.argv[1])]
+    rows = []
+    for path in sys.argv[1:]:
+        rows += [json.loads(l) for l in open(path)]
     by = defaultdict(list)
     for r in rows:
         by[r["name"]].append(r)
@@ -135,6 +164,7 @@ def main():
         print(f"**{n}**\n")
         print(table(["k·travel", "試行数", "目標力平均 N", "潰れ", "潰れた局面", "成功"], out))
         print()
+    paired(by, names)
 
 
 if __name__ == "__main__":

@@ -90,6 +90,9 @@ def aggregate(rows: list[dict]) -> dict:
     for phase in ("push", "contact", "hold", "none"):
         out[f"peak_phase_{phase}"] = sum(r.get("peak_phase") == phase for r in rows)
     out["peak_force_hold"] = float(np.mean([r.get("peak_force_hold", np.nan) for r in rows]))
+    terms = sorted({k for r in rows for k in r.get("reward_terms", {})})
+    out["reward_terms"] = {k: float(np.mean([r.get("reward_terms", {}).get(k, 0.0) for r in rows]))
+                           for k in terms}
     t = [r["time_to_stable_s"] for r in rows if r["time_to_stable_s"] is not None]
     out["stable_reached"] = len(t)
     out["time_to_stable_mean_s"] = float(np.mean(t)) if t else None
@@ -109,7 +112,7 @@ def train_force_grasp(output: str, *, steps: int, seed: int = 42, n_envs: int = 
                       learning_rate: float = 6e-4, curriculum_fraction: float = 1 / 3,
                       eval_freq: int = 10_000, eval_episodes: int = 24,
                       checkpoint_freq: int = 10_000, config: ForceGraspConfig | None = None,
-                      resume: str | None = None) -> dict:
+                      resume: str | None = None, select: str = "return") -> dict:
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
     from stable_baselines3.common.logger import configure
@@ -131,7 +134,7 @@ def train_force_grasp(output: str, *, steps: int, seed: int = 42, n_envs: int = 
         "eval_freq": eval_freq, "eval_episodes": eval_episodes,
         "selection_seeds": [SELECTION_SEEDS, SELECTION_SEEDS + eval_episodes - 1],
         "algorithm": "PPO", "policy": "MlpPolicy", "ppo": ppo_kwargs, "env": config.to_dict(),
-        "resume": resume,
+        "resume": resume, "select": select,
         "deviations_from_paper_code": [
             f"{n_envs} parallel envs (paper code: 10; M1 runs at most 6 well)",
             f"n_steps {n_steps} per env (paper code: SB3 default 2048)",
@@ -193,6 +196,8 @@ def train_force_grasp(output: str, *, steps: int, seed: int = 42, n_envs: int = 
                 for k in ("success", "relative_error", "peak_force_physics", "peak_over_goal",
                           "crushed", "both_contact_ratio", "action_saturation"):
                     self.logger.record(f"train_episode/{k}", agg[k])
+                for k, v in agg["reward_terms"].items():
+                    self.logger.record(f"reward_terms/{k}", v)
             self.logger.record("time/wall_s", time.time() - started)
 
         def _evaluate(self) -> None:
@@ -205,8 +210,11 @@ def train_force_grasp(output: str, *, steps: int, seed: int = 42, n_envs: int = 
                 f.write(json.dumps(agg) + "\n")
             for k in ("return", "success", "relative_error", "peak_force_physics", "crushed"):
                 self.logger.record(f"selection/{k}", agg[k])
-            if agg["return"] > self.best:
-                self.best = agg["return"]
+            # "success": final safe-grasp success rate on the selection seeds,
+            # ties broken by return.
+            score = agg["return"] if select == "return" else agg["success"] + 1e-6 * agg["return"]
+            if score > self.best:
+                self.best = score
                 self.model.save(out / "best.zip")
                 (out / "best.json").write_text(json.dumps(agg, indent=2))
 
@@ -216,7 +224,8 @@ def train_force_grasp(output: str, *, steps: int, seed: int = 42, n_envs: int = 
     model.save(out / "final.zip")
     wall = time.time() - started
     summary = {"output": str(out), "timesteps": int(model.num_timesteps), "wall_s": wall,
-               "steps_per_s": steps / wall, "best_selection_return": cb.best}
+               "steps_per_s": steps / wall, "select": select,
+               ("best_selection_return" if select == "return" else "best_selection_score"): cb.best}
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     venv.close()
     eval_env.close()

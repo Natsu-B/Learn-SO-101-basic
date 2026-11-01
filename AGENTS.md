@@ -55,9 +55,9 @@ Mac mini M1（aarch64-darwin）。すべて `nix develop` 内で実行する。
 nix develop                     # .venv があれば自動activate
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
-cargo test --workspace          # 2026-11-01 時点: 64件成功
+cargo test --workspace          # 2026-11-01 時点: 65件成功
 maturin develop                 # Pythonテスト前に native extension を再ビルド
-pytest -q                       # 2026-10-31 時点: 166 passed
+pytest -q                       # 2026-11-01 時点: 176 passed
 
 # Pick & Place（IK版）評価: 引数 = エピソード数, 先頭seed。JSON lines を stdout、要約を stderr
 cargo run --release -p mujoco-runtime --example so101_pick_place -- 200 0
@@ -153,6 +153,12 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 独立環境 `force_grasp.rs` + `scenes/so101_force_grasp.xml`: 4面の表皮板をばね・ダンパ付きスライド関節で芯に付けた柔軟物体（**F = k·d + c·ḋ を陽に持つ**．めり込みは別に記録）．潰れる前はジョー法線力＝ばね力（0.05 N以内）．
 - 成立性（学習なし，20試行）: 力PIは平均力を目標±0.005 N以内に保った（潰れ1/20）．固定閉指令は20/20で潰す（39 N）．課題は接触直後のピーク（中央値6.6 N・最大34 N，1自由度で物体をすき間分押し渡すため）．PPO学習は未実施．
 - テスト: Rust 64件（`tests/force_grasp.rs` 6件を追加），pytest 166件成功（2026-11-01）．
+- PPO（2026-11-01，FORCE_CONTROL.md §6〜9）: `ForceGraspEnv`（`robot_sim.force_grasp_env`，観測に物体の真値なし，物理ステップ単位のピーク），学習 `train_force_grasp_ppo.py`（出力先が空でなければ拒否），評価 `eval_force_grasp.py`（選択seed 7M〜 / 最終seed 8M〜）．`runs/force-grasp-ppo/`に計約8.7M step・53分．
+  - 最終評価200試行: 公開スクリプト相当のP1（r_objなし・φなし）は平均誤差0.208 N（力PI 0.278 N），ピーク平均13.6 N（PI 20.1 N），ただし潰れ65%・成功15%（PI 16.5%）．論文相当（r_obj＋SO-101版φ，P2）は誤差2.7 N．
+  - 論文ベース報酬ではピーク荷重は下がらない．独自のピーク罰（重みを0→20で焼きなまし，P8）でピーク平均3.4 N・潰れ5%になるが，両ジョー接触の維持45%（柔らかい物体を把持しない）．
+  - 押し渡しを遅くすれば衝突は避けられる（0.015 rad/sで潰れ12.5%）が5 sに収まらない．押すだけで潰れる物体は3%．
+  - 失敗した設定: 全開0.6 radから開始（接触しない），SO-101版φ = 0.1（押し渡しが進まない），毎周期のピーク罰・ゼロからの強いピーク罰（全開で接触回避）．
+- テスト（PPO追加後）: Rust 65件，pytest 176件成功．
 
 未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり），物理モデルの修正（別ブランチで行う）．
 

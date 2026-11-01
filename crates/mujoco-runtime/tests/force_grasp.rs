@@ -188,3 +188,32 @@ fn teleport_positioning_matches_the_scripted_gap_and_step_stats_cover_physics_st
     }
     assert!((pushes[0] - pushes[1]).abs() < 0.5e-3, "gap {pushes:?}");
 }
+
+#[test]
+fn arm_shift_moves_the_pinch_along_the_closing_direction() {
+    let mut e = env();
+    e.reset(7_000_000, None).unwrap();
+    assert!(
+        e.shift_arm(0.005).is_err(),
+        "scripted positioning has no IK target"
+    );
+    e.positioning = Positioning::Teleport;
+    e.reset(7_000_000, None).unwrap();
+    assert!(e.shift_arm(0.02).is_err(), "beyond MAX_ARM_SHIFT");
+    let z = e.pp.closing_direction();
+    let before = e.pp.gripper_pose().0;
+    e.shift_arm(0.005).unwrap();
+    let q = e.reading().unwrap().gripper_command;
+    for _ in 0..30 {
+        e.step(q).unwrap();
+    }
+    let after = e.pp.gripper_pose().0;
+    let h = z[0].hypot(z[1]);
+    let along = ((after[0] - before[0]) * z[0] + (after[1] - before[1]) * z[1]) / h;
+    assert!(
+        (along - 0.005).abs() < 0.001,
+        "moved {along} m along the closing axis"
+    );
+    assert!((after[2] - before[2]).abs() < 0.001);
+    assert_eq!(e.arm_shift(), 0.005);
+}

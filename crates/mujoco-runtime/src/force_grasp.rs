@@ -251,6 +251,10 @@ pub struct ForceGraspSim {
     /// Gripper damping scale of this episode.
     pub gripper_damping_scale: f64,
     pub positioning: Positioning,
+    /// Teleport positioning: IK target, closing constraint and solution, for
+    /// `shift_arm` (arm-assisted experiment, docs §10.5).
+    pinch_target: Option<([f64; 3], [f64; 3], Vec<f64>)>,
+    arm_shift: f64,
 }
 
 impl ForceGraspSim {
@@ -310,6 +314,8 @@ impl ForceGraspSim {
             positioning_displacement: 0.,
             gripper_damping_scale: 1.,
             positioning: Positioning::Scripted,
+            pinch_target: None,
+            arm_shift: 0.,
         };
         this.apply_object(CompliantObject::nominal())?;
         Ok(this)
@@ -390,6 +396,8 @@ impl ForceGraspSim {
         // The scripted descent is calibrated for a 25 mm cube: shift the fixed
         // jaw by the extra half width plus the requested gap.
         let clearance = (0.5 * o.width - 0.0125) + o.gap - FIXED_JAW_BASE_GAP;
+        self.pinch_target = None;
+        self.arm_shift = 0.;
         let command = match self.positioning {
             Positioning::Scripted => self.position_scripted(clearance)?,
             Positioning::Teleport => self.position_teleport(start, clearance)?,
@@ -455,6 +463,7 @@ impl ForceGraspSim {
         let (mut q, _) =
             self.pp
                 .solve_ik(&q_above, &IkTarget::top_down(target, Some(closing)), 200)?;
+        self.pinch_target = Some((target, closing, q.clone()));
         q[GRIPPER] = crate::skills::GRIPPER_OPEN;
         self.pp.sim.teleport(&q)?;
         let command = JointCommand { position: q };
@@ -514,6 +523,42 @@ impl ForceGraspSim {
             return Err(Error::Unstable);
         }
         Ok(st)
+    }
+    /// Maximum `shift_arm` displacement (m).
+    pub const MAX_ARM_SHIFT: f64 = 0.012;
+    /// Arm-assisted experiment (not the paper): move the frozen pinch target
+    /// horizontally along the closing direction by `shift` metres from its
+    /// reset position (positive: from the fixed towards the moving jaw, so
+    /// the fixed jaw approaches the object and the moving jaw backs off).
+    /// Re-solves the arm IK; the gripper command is unchanged. Teleport
+    /// positioning only.
+    pub fn shift_arm(&mut self, shift: f64) -> Result<()> {
+        let Some((target, closing, q0)) = self.pinch_target.clone() else {
+            return Err(Error::Input("shift_arm needs teleport positioning".into()));
+        };
+        if !(shift.is_finite() && shift.abs() <= Self::MAX_ARM_SHIFT) {
+            return Err(Error::Input("arm shift out of range".into()));
+        }
+        let z = self.closing;
+        let h = z[0].hypot(z[1]).max(1e-9);
+        let goal = [
+            target[0] + shift * z[0] / h,
+            target[1] + shift * z[1] / h,
+            target[2],
+        ];
+        let (q, _) = self
+            .pp
+            .solve_ik(&q0, &IkTarget::top_down(goal, Some(closing)), 100)?;
+        for (i, v) in q.iter().enumerate() {
+            if i != GRIPPER {
+                self.arm_command.position[i] = *v;
+            }
+        }
+        self.arm_shift = shift;
+        Ok(())
+    }
+    pub fn arm_shift(&self) -> f64 {
+        self.arm_shift
     }
     /// Arm command frozen at reset (gripper entry is the opening command).
     pub fn arm_command(&self) -> &JointCommand {

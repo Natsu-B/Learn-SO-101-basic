@@ -207,6 +207,11 @@ impl ForceGraspSimulator {
             Ok((s.positioning_displacement, s.gripper_damping_scale))
         })
     }
+    /// Arm-assisted experiment: shift the pinch target along the closing
+    /// direction by ``shift`` m (|shift| <= 12 mm; teleport positioning).
+    fn shift_arm(&self, py: Python<'_>, shift: f64) -> PyResult<()> {
+        self.session(py, move |s| s.shift_arm(shift))
+    }
     #[classattr]
     fn penetration_limit() -> f64 {
         PENETRATION_LIMIT

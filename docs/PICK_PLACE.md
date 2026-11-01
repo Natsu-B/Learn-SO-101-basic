@@ -17,7 +17,7 @@
 | 学習済みチェックポイントは未同梱 | **`runs/so101-reach-5mm/base-policy/best.zip`、`runs/so101-reach-hold/best.zip` が存在** | **相違** |
 
 追加で判明した点:
-- 既存 `.venv` はリポジトリ移動前のパス（`/Users/natsu/PhysicalAI/...`）を参照しており `maturin develop` が失敗した。
+- 既存 `.venv` はリポジトリ移動前のパスを参照しており `maturin develop` が失敗した。
   `.venv-old-moved-path/` に退避し、`uv venv` + `uv sync --locked --extra learning` で再作成した。
 - 既存Reach checkpoint（base-policy）は再作成した環境で読み込み可能。100 episode・5mmで到達率 98%（seed 10000〜）。
 - `gripperframe` は挟持中心ではない。実測で固定ジョー先端は site 座標 (+2.9, 0.2, −20.1) mm、

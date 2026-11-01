@@ -1,0 +1,28 @@
+lach2024:
+  type: article
+  title: Zero-Shot Transfer of a Tactile-based Continuous Force Control Policy from Simulation to Robot
+  author: ["Lach, Luca", "Haschke, Robert", "Tateo, Davide", "Peters, Jan", "Ritter, Helge", "Borràs, Júlia", "Torras, Carme"]
+  date: 2024
+  page-range: 725-732
+  serial-number:
+    doi: 10.1109/IROS58592.2024.10802386
+  parent:
+    type: proceedings
+    title: IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)
+
+andrychowicz2017:
+  type: article
+  title: Hindsight Experience Replay
+  author: ["Andrychowicz, Marcin", "Wolski, Filip", "Ray, Alex", "Schneider, Jonas", "Fong, Rachel", "Welinder, Peter", "McGrew, Bob", "Tobin, Josh", "Abbeel, Pieter", "Zaremba, Wojciech"]
+  date: 2017
+  parent:
+    type: proceedings
+    title: Advances in Neural Information Processing Systems (NeurIPS)
+
+schulman2017:
+  type: article
+  title: Proximal Policy Optimization Algorithms
+  author: ["Schulman, John", "Wolski, Filip", "Dhariwal, Prafulla", "Radford, Alec", "Klimov, Oleg"]
+  date: 2017
+  serial-number:
+    arxiv: "1707.06347"

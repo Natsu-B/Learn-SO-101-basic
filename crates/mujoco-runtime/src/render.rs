@@ -87,6 +87,15 @@ impl OffscreenRenderer {
         })
     }
 
+    /// Free camera: look-at point (world, m), distance (m), azimuth and
+    /// elevation (degrees).
+    pub fn set_camera(&mut self, lookat: [f64; 3], distance: f64, azimuth: f64, elevation: f64) {
+        self.camera.set_lookat(lookat);
+        self.camera.set_distance(distance);
+        self.camera.set_azimuth(azimuth);
+        self.camera.set_elevation(elevation);
+    }
+
     /// Top-to-bottom RGB8 pixels. Forward kinematics runs only on the render copy.
     pub fn render(&mut self, state: &[f64]) -> Result<Vec<u8>> {
         if state.len() != mj::mj_stateSize(&self.model, mjtState::INTEGRATION) {

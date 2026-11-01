@@ -564,6 +564,11 @@ impl ForceGraspSim {
         self.arm_shift = shift;
         Ok(())
     }
+    /// Jaw closing direction (world, from the fixed towards the moving jaw)
+    /// measured after positioning.
+    pub fn closing(&self) -> [f64; 3] {
+        self.closing
+    }
     pub fn arm_shift(&self) -> f64 {
         self.arm_shift
     }

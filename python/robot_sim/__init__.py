@@ -1,6 +1,7 @@
 """Rust simulator and optional Gymnasium environment."""
 from ._native import (
-    Simulator, PickPlaceSimulator, PickPlaceRenderer, ForceGraspSimulator, ForcePi, SineTrajectory,
+    Simulator, PickPlaceSimulator, PickPlaceRenderer, ForceGraspSimulator, ForceGraspRenderer, ForcePi,
+    SineTrajectory,
     ACTUATOR_NAMES, __version__,
     GRIPPER_OPEN, GRIPPER_CLOSED, CONTROL_PERIOD,
 )
@@ -28,7 +29,7 @@ def __getattr__(name):
     raise AttributeError(name)
 
 __all__ = [
-    "Simulator", "PickPlaceSimulator", "PickPlaceRenderer", "ForceGraspSimulator", "ForcePi",
+    "Simulator", "PickPlaceSimulator", "PickPlaceRenderer", "ForceGraspSimulator", "ForceGraspRenderer", "ForcePi",
     "RobotEnv", "ACTUATOR_NAMES",
     "GRIPPER_OPEN", "GRIPPER_CLOSED", "CONTROL_PERIOD",
 ]

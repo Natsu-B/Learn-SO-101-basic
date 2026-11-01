@@ -24,7 +24,7 @@
         springref="0" armature="0.1" solreflimit="0.01 1" solimplimit="0.99 0.999 0.001 0.5 2"/>
       <geom type="box" size="0.0025 0.009 0.0185" pos="0 0 0.0015" mass="0.002"
         friction="1 5e-3 5e-4" condim="6" priority="2" solref="0.01 1"
-        solimp="0.99 0.99 0.001 0.5 2" rgba="0.95 0.75 0.2 1"/>
+        solimp="0.99 0.99 0.001 0.5 2" rgba="0.16 0.47 0.84 1"/>
     </default>
   </default>
   <worldbody>
@@ -42,7 +42,7 @@
     <body name="cube" pos="0.2 0 0.02">
       <freejoint name="cube_joint"/>
       <geom name="cube_geom" type="box" size="0.01 0.01 0.0012" pos="0 0 -0.0188" mass="0.03"
-        friction="1.2 0.005 0.0001" condim="4" solref="0.01 1" rgba="0.35 0.35 0.4 1"/>
+        friction="1.2 0.005 0.0001" condim="4" solref="0.01 1" rgba="0.2 0.2 0.24 1"/>
       <geom name="cube_column" type="box" size="0.0065 0.0065 0.02" mass="0"
         friction="1.2 0.005 0.0001" condim="4" solref="0.01 1" rgba="0.35 0.35 0.4 1"/>
       <site name="cube_center" size="0.002" rgba="1 1 1 0" group="4"/>

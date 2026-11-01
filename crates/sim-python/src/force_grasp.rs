@@ -6,7 +6,11 @@ use mujoco_runtime::force_grasp::{
     CompliantObject, ForceGraspRanges, ForceGraspSim, ForcePi, ForceReading, PENETRATION_LIMIT,
     Positioning, StepStats,
 };
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+use pyo3::{
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyBytes, PyDict},
+};
 use robotics_core::Result;
 
 fn reading_dict<'py>(py: Python<'py>, r: &ForceReading) -> PyResult<Bound<'py, PyDict>> {
@@ -200,6 +204,10 @@ impl ForceGraspSimulator {
     fn goal_range(&self, py: Python<'_>, f_min: f64, f_cap: f64) -> PyResult<[f64; 2]> {
         self.session(py, move |s| Ok(s.object().goal_range(f_min, f_cap)))
     }
+    /// Jaw closing direction in world (fixed towards moving jaw) of this episode.
+    fn closing_direction(&self, py: Python<'_>) -> PyResult<[f64; 3]> {
+        self.session(py, |s| Ok(s.closing()))
+    }
     fn gripper_bounds(&self, py: Python<'_>) -> PyResult<[f64; 2]> {
         self.session(py, |s| Ok(s.gripper_bounds()))
     }
@@ -219,6 +227,65 @@ impl ForceGraspSimulator {
         PENETRATION_LIMIT
     }
 }
+/// Main-thread visualization of a private copy of the current episode's
+/// model (the object geometry changes per reset: create one per episode).
+#[pyclass(module = "robot_sim._native", unsendable)]
+pub(crate) struct ForceGraspRenderer {
+    renderer: Option<mujoco_runtime::render::OffscreenRenderer>,
+    source: Py<ForceGraspSimulator>,
+}
+#[pymethods]
+impl ForceGraspRenderer {
+    #[new]
+    #[pyo3(signature = (sim, width=1280, height=720))]
+    fn new(
+        py: Python<'_>,
+        sim: Py<ForceGraspSimulator>,
+        width: u32,
+        height: u32,
+    ) -> PyResult<Self> {
+        let model = sim.borrow(py).session(py, |s| {
+            Ok(mujoco_runtime::render::model_snapshot(&s.pp.sim))
+        })?;
+        let renderer =
+            boundary(|| mujoco_runtime::render::OffscreenRenderer::new(&model, width, height))?;
+        Ok(Self {
+            renderer: Some(renderer),
+            source: sim,
+        })
+    }
+    /// Free camera: look-at point (m), distance (m), azimuth, elevation (deg).
+    fn set_camera(
+        &mut self,
+        lookat: [f64; 3],
+        distance: f64,
+        azimuth: f64,
+        elevation: f64,
+    ) -> PyResult<()> {
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("renderer is closed"))?;
+        renderer.set_camera(lookat, distance, azimuth, elevation);
+        Ok(())
+    }
+    /// Return width * height * 3 RGB bytes; source physics is read-only.
+    fn render<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("renderer is closed"))?;
+        let state = self.source.borrow(py).session(py, |s| {
+            Ok(mujoco_runtime::render::state_snapshot(&s.pp.sim))
+        })?;
+        let bytes = boundary(|| renderer.render(&state))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+    fn close(&mut self) {
+        self.renderer = None;
+    }
+}
+
 impl ForceGraspSimulator {
     fn session<T: Send + 'static>(
         &self,

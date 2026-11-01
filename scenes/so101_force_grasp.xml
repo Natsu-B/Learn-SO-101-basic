@@ -1,0 +1,72 @@
+<mujoco model="so101_force_grasp_scene">
+  <!-- Grasp-force control scene (docs/FORCE_CONTROL.md §3). Separate from
+       so101_pick_place.xml; the SO-101 model itself is unchanged. -->
+  <include file="@MODEL_XML@"/>
+  <compiler meshdir="@MODEL_ASSETS@"/>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <global azimuth="150" elevation="-25" offwidth="1280" offheight="720"/>
+  </visual>
+  <asset>
+    <texture type="2d" name="table_tex" builtin="checker" rgb1="0.55 0.45 0.35" rgb2="0.5 0.4 0.3"
+      width="256" height="256"/>
+    <material name="table_mat" texture="table_tex" texrepeat="8 8" reflectance="0.05"/>
+  </asset>
+  <default>
+    <!-- Compliant object face: a thin plate on a spring-damper slide joint
+         (compression d >= 0 along the inward normal, F = k d + c d'). The
+         plate carries the jaw contact; its armature is fixed so the contact's
+         numerical penetration does not depend on the object mass, and keeps the
+         explicit spring stable at the 5 ms physics step. Width, stiffness,
+         damping, friction and travel are written per episode by force_grasp.rs. -->
+    <default class="skin">
+      <joint type="slide" limited="true" range="0 0.004" stiffness="1000" damping="2"
+        springref="0" armature="0.1" solreflimit="0.01 1" solimplimit="0.99 0.999 0.001 0.5 2"/>
+      <geom type="box" size="0.0025 0.009 0.0185" pos="0 0 0.0015" mass="0.002"
+        friction="1 5e-3 5e-4" condim="6" priority="2" solref="0.01 1"
+        solimp="0.99 0.99 0.001 0.5 2" rgba="0.95 0.75 0.2 1"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0 -1 2" dir="0 0 -1"/>
+    <light pos="0.3 0.5 1.5" dir="-0.2 -0.3 -1" diffuse="0.3 0.3 0.3"/>
+    <geom name="table" type="plane" size="0.6 0.6 0.01" pos="0 0 0" material="table_mat"
+      friction="1 0.005 0.0001"/>
+    <!-- Rigid core (free joint) with four compliant faces. Nominal outer width
+         30 mm: plate (5 mm) + plate travel (4 mm) + core column (half 6 mm);
+         40 mm tall so that the pinch (at the object centre) keeps the SO-101
+         jaws off the table — at 12.5 mm the closing jaw meshes hit it.
+         `cube_geom` is a thin base under the plates that carries the table
+         contact; the column is what a jaw meets after full compression. The
+         plates' bottoms are 3 mm above the table. -->
+    <body name="cube" pos="0.2 0 0.02">
+      <freejoint name="cube_joint"/>
+      <geom name="cube_geom" type="box" size="0.01 0.01 0.0012" pos="0 0 -0.0188" mass="0.03"
+        friction="1.2 0.005 0.0001" condim="4" solref="0.01 1" rgba="0.35 0.35 0.4 1"/>
+      <geom name="cube_column" type="box" size="0.0065 0.0065 0.02" mass="0"
+        friction="1.2 0.005 0.0001" condim="4" solref="0.01 1" rgba="0.35 0.35 0.4 1"/>
+      <site name="cube_center" size="0.002" rgba="1 1 1 0" group="4"/>
+      <body name="skin_px" pos="0.0125 0 0">
+        <joint name="skin_px" class="skin" axis="-1 0 0"/>
+        <geom name="skin_px" class="skin"/>
+      </body>
+      <body name="skin_nx" pos="-0.0125 0 0">
+        <joint name="skin_nx" class="skin" axis="1 0 0"/>
+        <geom name="skin_nx" class="skin"/>
+      </body>
+      <body name="skin_py" pos="0 0.0125 0" quat="0.70710678 0 0 0.70710678">
+        <joint name="skin_py" class="skin" axis="-1 0 0"/>
+        <geom name="skin_py" class="skin"/>
+      </body>
+      <body name="skin_ny" pos="0 -0.0125 0" quat="0.70710678 0 0 0.70710678">
+        <joint name="skin_ny" class="skin" axis="1 0 0"/>
+        <geom name="skin_ny" class="skin"/>
+      </body>
+    </body>
+    <body name="place_target" mocap="true" pos="0.2 0.12 0">
+      <geom name="place_target_marker" type="cylinder" size="0.022 0.0006" pos="0 0 0.0006"
+        contype="0" conaffinity="0" rgba="0.1 0.8 0.2 0.55"/>
+      <site name="place_target_site" size="0.002" rgba="0 1 0 0" group="4"/>
+    </body>
+  </worldbody>
+</mujoco>

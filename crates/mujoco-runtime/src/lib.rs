@@ -1,3 +1,4 @@
+pub mod force_grasp;
 mod model_access;
 pub mod pick_place;
 pub mod presets;

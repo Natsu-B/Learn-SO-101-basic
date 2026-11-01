@@ -237,3 +237,64 @@ pub(crate) fn geom_contacts(
     let (rows, _) = out.as_chunks::<CONTACT_FIELDS>();
     rows.iter().take(n.max(0) as usize).copied().collect()
 }
+
+unsafe extern "C" {
+    fn robot_sim_set_box(model: *mut mj::bindgen::mjModel, geom: i32, size: *const f64) -> i32;
+    fn robot_sim_set_body_pos(model: *mut mj::bindgen::mjModel, body: i32, pos: *const f64) -> i32;
+    fn robot_sim_set_slide(
+        model: *mut mj::bindgen::mjModel,
+        joint: i32,
+        stiffness: f64,
+        damping: f64,
+        travel: f64,
+    ) -> i32;
+}
+fn checked(ok: i32, what: &str) -> robotics_core::Result<()> {
+    if ok == 0 {
+        return Err(robotics_core::Error::Model(format!("invalid {what}")));
+    }
+    Ok(())
+}
+/// Box half sizes (and bounding volumes). Reset-time only; see model_access.c.
+pub(crate) fn set_box(
+    model: &mut mj::mjModel,
+    geom: ObjectId<obj::Geom>,
+    size: [f64; 3],
+) -> robotics_core::Result<()> {
+    // SAFETY: exclusive reset-time model access, three-element buffer, C checks
+    // index, type and positivity; no topology change.
+    checked(
+        unsafe { robot_sim_set_box(&mut **model, geom.index() as i32, size.as_ptr()) },
+        "box geom",
+    )
+}
+pub(crate) fn set_body_pos(
+    model: &mut mj::mjModel,
+    body: ObjectId<obj::Body>,
+    pos: [f64; 3],
+) -> robotics_core::Result<()> {
+    if pos.iter().any(|v| !v.is_finite()) {
+        return Err(robotics_core::Error::Input(
+            "nonfinite body position".into(),
+        ));
+    }
+    // SAFETY: as set_box.
+    checked(
+        unsafe { robot_sim_set_body_pos(&mut **model, body.index() as i32, pos.as_ptr()) },
+        "body",
+    )
+}
+/// Slide-joint spring (N/m), damping (N s/m) and upper travel (m).
+pub(crate) fn set_slide(
+    model: &mut mj::mjModel,
+    joint: usize,
+    stiffness: f64,
+    damping: f64,
+    travel: f64,
+) -> robotics_core::Result<()> {
+    // SAFETY: as set_box; C checks the joint type and finite, valid values.
+    checked(
+        unsafe { robot_sim_set_slide(&mut **model, joint as i32, stiffness, damping, travel) },
+        "slide joint",
+    )
+}

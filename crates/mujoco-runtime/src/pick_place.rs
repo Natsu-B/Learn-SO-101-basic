@@ -333,7 +333,17 @@ impl PickPlaceSim {
             ));
         }
         let scene = config.shape.scene(config.cube_half)?;
-        let sim = Simulator::from_spec_with_scene(spec, &scene)?;
+        Self::from_scene(spec, config, &scene)
+    }
+    /// Load another scene template with the same named elements (`cube_joint`,
+    /// `cube_geom`, `table`, `place_target`); `config.shape` is not applied.
+    /// Used by separate environments such as `force_grasp`.
+    pub fn from_scene(
+        spec: robotics_core::RobotSpec,
+        config: PickPlaceConfig,
+        scene: &str,
+    ) -> Result<Self> {
+        let sim = Simulator::from_spec_with_scene(spec, scene)?;
         let m = &sim.model;
         let missing = |what: &str| Error::Model(format!("pick-place scene is missing {what}"));
         let cube_joint = m

@@ -1,4 +1,5 @@
 #include <mujoco/mujoco.h>
+#include <math.h>
 
 /* Only called on an owned rendering copy, never on a physics model. */
 void robot_sim_render_quality(mjModel* model) {
@@ -138,4 +139,37 @@ int robot_sim_geom_contacts(const mjModel* m, const mjData* d, int g, double* ou
     o[22] = c->solimp[3]; o[23] = c->solimp[4];
   }
   return n;
+}
+
+/* Compliant-object edits for force_grasp.rs, reset-time only (the caller
+ * then runs mj_setConst through robot_sim_write_object and resets mjData).
+ * Box half sizes with the matching bounding sphere and local AABB. */
+int robot_sim_set_box(mjModel* m, int g, const double* size) {
+  if (g < 0 || g >= m->ngeom || m->geom_type[g] != mjGEOM_BOX) return 0;
+  double r2 = 0;
+  for (int i = 0; i < 3; i++) {
+    if (!(size[i] > 0)) return 0;
+    r2 += size[i] * size[i];
+  }
+  for (int i = 0; i < 3; i++) {
+    m->geom_size[3 * g + i] = size[i];
+    m->geom_aabb[6 * g + i] = 0;
+    m->geom_aabb[6 * g + 3 + i] = size[i];
+  }
+  m->geom_rbound[g] = sqrt(r2);
+  return 1;
+}
+int robot_sim_set_body_pos(mjModel* m, int b, const double* pos) {
+  if (b <= 0 || b >= m->nbody) return 0;
+  for (int i = 0; i < 3; i++) m->body_pos[3 * b + i] = pos[i];
+  return 1;
+}
+/* Slide joint spring (N/m), damping (N s/m) and upper travel (m). */
+int robot_sim_set_slide(mjModel* m, int j, double stiffness, double damping, double travel) {
+  if (j < 0 || j >= m->njnt || m->jnt_type[j] != mjJNT_SLIDE) return 0;
+  if (!(stiffness >= 0) || !(damping >= 0) || !(travel > 0)) return 0;
+  m->jnt_stiffness[j] = stiffness;
+  m->dof_damping[m->jnt_dofadr[j]] = damping;
+  m->jnt_range[2 * j + 1] = travel;
+  return 1;
 }

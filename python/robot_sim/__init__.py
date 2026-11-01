@@ -1,6 +1,7 @@
 """Rust simulator and optional Gymnasium environment."""
 from ._native import (
-    Simulator, PickPlaceSimulator, PickPlaceRenderer, SineTrajectory, ACTUATOR_NAMES, __version__,
+    Simulator, PickPlaceSimulator, PickPlaceRenderer, ForceGraspSimulator, ForcePi, SineTrajectory,
+    ACTUATOR_NAMES, __version__,
     GRIPPER_OPEN, GRIPPER_CLOSED, CONTROL_PERIOD,
 )
 from .config import TaskConfig
@@ -9,6 +10,9 @@ def __getattr__(name):
     if name == "GoalTransportEnv":
         from .transport_env import GoalTransportEnv
         return GoalTransportEnv
+    if name == "ForceGraspEnv":
+        from .force_grasp_env import ForceGraspEnv
+        return ForceGraspEnv
     if name == "GoalReachEnv":
         from .goal_env import GoalReachEnv
         return GoalReachEnv
@@ -24,6 +28,7 @@ def __getattr__(name):
     raise AttributeError(name)
 
 __all__ = [
-    "Simulator", "PickPlaceSimulator", "PickPlaceRenderer", "RobotEnv", "ACTUATOR_NAMES",
+    "Simulator", "PickPlaceSimulator", "PickPlaceRenderer", "ForceGraspSimulator", "ForcePi",
+    "RobotEnv", "ACTUATOR_NAMES",
     "GRIPPER_OPEN", "GRIPPER_CLOSED", "CONTROL_PERIOD",
 ]

@@ -28,6 +28,9 @@ def main():
     p.add_argument("--no-bias", action="store_true", help="disable the inductive bias")
     p.add_argument("--peak-weight", type=float, default=1.0)
     p.add_argument("--peak-margin", type=float, default=0.5)
+    p.add_argument("--peak-mode", choices=("step", "max"), default="step")
+    p.add_argument("--peak-weight-start", type=float,
+                   help="anneal the peak weight from this value with the curriculum")
     p.add_argument("--alpha-obj", type=float, nargs=2, default=(0.0, 1.0),
                    help="object-movement penalty weight at curriculum start/end (paper 0 -> 1; "
                         "public scripts 0 0)")
@@ -36,6 +39,7 @@ def main():
     a = p.parse_args()
     config = ForceGraspConfig(reward=a.reward, inductive_bias=not a.no_bias,
                               peak_weight=a.peak_weight, peak_margin=a.peak_margin,
+                              peak_mode=a.peak_mode, peak_weight_start=a.peak_weight_start,
                               alpha_obj=tuple(a.alpha_obj),
                               bias_single_moving=a.bias_single_moving)
     summary = train_force_grasp(

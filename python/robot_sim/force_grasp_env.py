@@ -96,10 +96,20 @@ class ForceGraspConfig:
     peak_weight: float = 1.0
     peak_margin: float = 0.5
     peak_clip: float = 5.0
+    # "step": penalize the overload of every period (run p4: the policy
+    # learned to avoid contact); "max": penalize only increases of the
+    # episode's running maximum overload, so an episode costs at most
+    # peak_weight * peak_clip and the term targets the largest force.
+    peak_mode: str = "step"
+    # If set, the peak weight is annealed from this value to peak_weight
+    # with the curriculum (as alpha2), so the policy first learns to grasp.
+    peak_weight_start: float | None = None
 
     def validate(self) -> None:
         if self.reward not in REWARDS:
             raise ValueError(f"reward must be one of {REWARDS}")
+        if self.peak_mode not in ("step", "max"):
+            raise ValueError("peak_mode must be step or max")
         if self.force_reward_norm not in ("goal", "none"):
             raise ValueError("force_reward_norm must be goal or none")
         if not (self.max_steps > 0 and self.frame_stack > 0 and self.dq_max > 0):
@@ -140,7 +150,22 @@ class EpisodeMetrics:
         tol = max(0.1 * g, 0.05)
         tail = f[-window:]
         err = np.abs(tail - g)
-        peak_face = max((max(s["max_jaw_force"]) for s in self.stats), default=0.0)
+        per_step_peak = [max(s["max_jaw_force"]) for s in self.stats]
+        peak_face = max(per_step_peak, default=0.0)
+        peak_step = int(np.argmax(per_step_peak)) if per_step_peak else None
+        # Where the peak happens relative to the first period with both jaws
+        # in contact: "push" (only the moving jaw), "contact" (within 3
+        # periods of both-contact: the impact on the fixed jaw), "hold".
+        if peak_step is None or contact is None:
+            peak_phase = "push" if peak_step is not None and peak_face > 0 else "none"
+        elif peak_step < contact - 1:
+            peak_phase = "push"
+        elif peak_step <= contact + 3:
+            peak_phase = "contact"
+        else:
+            peak_phase = "hold"
+        hold = per_step_peak[contact + 4:] if contact is not None else []
+        peak_hold = max(hold, default=0.0)
         peak_rigid = max((max(s["max_rigid_force"]) for s in self.stats), default=0.0)
         peak_period_end = float(f.max()) if n else 0.0
         max_def = np.max([s["max_deformation"] for s in self.stats], axis=0) if self.stats else np.zeros(2)
@@ -170,6 +195,9 @@ class EpisodeMetrics:
             "relative_error": mean_abs / g if g else float("nan"),
             "final_force": tail.mean(axis=0).tolist() if n else [0.0, 0.0],
             "peak_force_physics": float(peak_face),
+            "peak_step": peak_step,
+            "peak_phase": peak_phase,
+            "peak_force_hold": float(peak_hold),
             "peak_rigid_force_physics": float(peak_rigid),
             "peak_force_period_end": peak_period_end,
             "peak_over_goal": float(peak_face / g) if g else float("nan"),
@@ -218,6 +246,8 @@ class ForceGraspEnv(gym.Env):
         c, t = self.config, self.progress
         self.alpha_obj = float(_lerp(*c.alpha_obj, t))
         self.obj_velocity_max = float(_lerp(*c.obj_velocity_max, t))
+        start = c.peak_weight if c.peak_weight_start is None else c.peak_weight_start
+        self.peak_weight = float(_lerp(start, c.peak_weight, t))
         self.sim.set_ranges(
             width=list(_lerp(c.width[0], c.width[1], t)),
             gap=list(_lerp(c.gap[0], c.gap[1], t)),
@@ -249,6 +279,7 @@ class ForceGraspEnv(gym.Env):
         self.had_contact = np.zeros(2, dtype=bool)
         self.prev_action = 0.0  # applied (after the inductive bias)
         self.prev_raw_action = None
+        self._max_over = 0.0
         self.steps = 0
         self._reading = reading
         self._last_pos = np.asarray(reading["object_position"])
@@ -384,10 +415,14 @@ class ForceGraspEnv(gym.Env):
         reward = c.alpha_force * r_force + self.alpha_obj * r_obj + c.alpha_act * r_act
         if c.reward == "paper_peak":
             peak = max(stats["max_jaw_force"])
-            over = max(0.0, peak - (1.0 + c.peak_margin) * self.goal) / self.goal
-            r_peak = -min(over, c.peak_clip)
+            over = min(max(0.0, peak - (1.0 + c.peak_margin) * self.goal) / self.goal, c.peak_clip)
+            if c.peak_mode == "max":
+                r_peak = -max(0.0, over - self._max_over)
+                self._max_over = max(self._max_over, over)
+            else:
+                r_peak = -over
             terms["peak"] = float(r_peak)
-            reward += c.peak_weight * r_peak
+            reward += self.peak_weight * r_peak
         return float(reward), terms
 
     def _info(self, reading, stats) -> dict[str, Any]:

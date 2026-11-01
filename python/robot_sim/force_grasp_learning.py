@@ -81,6 +81,9 @@ def aggregate(rows: list[dict]) -> dict:
     out["peak_force_valid_max"] = float(vp.max()) if len(vp) else float("nan")
     out["peak_over_goal_valid"] = (
         float(np.mean([r["peak_over_goal"] for r in valid])) if valid else float("nan"))
+    for phase in ("push", "contact", "hold", "none"):
+        out[f"peak_phase_{phase}"] = sum(r.get("peak_phase") == phase for r in rows)
+    out["peak_force_hold"] = float(np.mean([r.get("peak_force_hold", np.nan) for r in rows]))
     t = [r["time_to_stable_s"] for r in rows if r["time_to_stable_s"] is not None]
     out["stable_reached"] = len(t)
     out["time_to_stable_mean_s"] = float(np.mean(t)) if t else None
@@ -154,6 +157,11 @@ def train_force_grasp(output: str, *, steps: int, seed: int = 42, n_envs: int = 
             self.next_ckpt = checkpoint_freq
             self.recent: list[dict] = []
             self.sim_time = 0.0
+
+        def _on_training_start(self) -> None:
+            # Resumed runs start at the loaded model's timestep count.
+            self.next_eval = self.num_timesteps + eval_freq
+            self.next_ckpt = self.num_timesteps + checkpoint_freq
 
         def _on_rollout_start(self) -> None:
             progress = min(1.0, self.num_timesteps / curriculum_end)

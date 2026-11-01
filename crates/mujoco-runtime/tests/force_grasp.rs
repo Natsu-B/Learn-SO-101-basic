@@ -216,4 +216,10 @@ fn arm_shift_moves_the_pinch_along_the_closing_direction() {
     );
     assert!((after[2] - before[2]).abs() < 0.001);
     assert_eq!(e.arm_shift(), 0.005);
+    let r = e.reading().unwrap();
+    assert_eq!(r.arm_shift, 0.005);
+    assert!(
+        (r.pinch_offset - along).abs() < 1e-9,
+        "reading reports the measured shift"
+    );
 }

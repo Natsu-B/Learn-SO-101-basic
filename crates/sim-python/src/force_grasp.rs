@@ -29,6 +29,8 @@ fn reading_dict<'py>(py: Python<'py>, r: &ForceReading) -> PyResult<Bound<'py, P
     d.set_item("object_closing_velocity", r.object_closing_velocity)?;
     d.set_item("object_displacement", r.object_displacement)?;
     d.set_item("fixed_face_shift", r.fixed_face_shift)?;
+    d.set_item("arm_shift", r.arm_shift)?;
+    d.set_item("pinch_offset", r.pinch_offset)?;
     Ok(d)
 }
 fn stats_dict<'py>(py: Python<'py>, s: &StepStats) -> PyResult<Bound<'py, PyDict>> {

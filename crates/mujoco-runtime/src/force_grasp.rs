@@ -222,6 +222,10 @@ pub struct ForceReading {
     pub object_closing_velocity: f64,
     /// Horizontal object displacement since the episode start (m).
     pub object_displacement: f64,
+    /// Commanded arm shift along the closing direction (m, `shift_arm`) and
+    /// the measured pinch-centre displacement along it since the reset.
+    pub arm_shift: f64,
+    pub pinch_offset: f64,
     /// Core shift towards the fixed jaw minus the fixed-side compression (m):
     /// how far the face touching the fixed jaw moved (push across the gap,
     /// then slip). Squeezing alone moves the core but not this face.
@@ -246,6 +250,7 @@ pub struct ForceGraspSim {
     arm_command: JointCommand,
     closing: [f64; 3],
     start: [f64; 3],
+    pinch_start: [f64; 3],
     /// Object displacement while the arm was positioned (m).
     pub positioning_displacement: f64,
     /// Gripper damping scale of this episode.
@@ -311,6 +316,7 @@ impl ForceGraspSim {
             arm_command: JointCommand::default(),
             closing: [1., 0., 0.],
             start: [0.; 3],
+            pinch_start: [0.; 3],
             positioning_displacement: 0.,
             gripper_damping_scale: 1.,
             positioning: Positioning::Scripted,
@@ -417,6 +423,7 @@ impl ForceGraspSim {
             (0..4).max_by(order).expect("four skins"),
         ];
         self.start = core;
+        self.pinch_start = self.pp.gripper_pose().0;
         self.positioning_displacement = (core[0] - start[0]).hypot(core[1] - start[1]);
         Ok(())
     }
@@ -664,6 +671,12 @@ impl ForceGraspSim {
             .map(|k| (p[k] - self.start[k]) * self.closing[k])
             .sum::<f64>();
         r.fixed_face_shift = towards_fixed - r.deformation[0];
+        let pinch = self.pp.gripper_pose().0;
+        let h = self.closing[0].hypot(self.closing[1]).max(1e-9);
+        r.arm_shift = self.arm_shift;
+        r.pinch_offset = ((pinch[0] - self.pinch_start[0]) * self.closing[0]
+            + (pinch[1] - self.pinch_start[1]) * self.closing[1])
+            / h;
         Ok(r)
     }
 }

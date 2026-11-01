@@ -55,7 +55,7 @@ Mac mini M1（aarch64-darwin）。すべて `nix develop` 内で実行する。
 nix develop                     # .venv があれば自動activate
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
-cargo test --workspace          # 2026-10-31 時点: 58件成功
+cargo test --workspace          # 2026-11-01 時点: 64件成功
 maturin develop                 # Pythonテスト前に native extension を再ビルド
 pytest -q                       # 2026-10-31 時点: 166 passed
 
@@ -147,6 +147,13 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 低次元Residual SAC（wrist 1-D / wrist+持ち上げ方向・速度 3-D，基準 IK+wrist −0.15，v3報酬，3万step）: legacy最終 245 / 242 vs 固定241・IK 240・v3 235（/570），pairwise 315 / 314 vs 311．**固定補正を上回らない（有意差なし）**．`runs/so101-grasp/lowdim-*`．
 - テスト: Rust 58件，pytest 166件成功（2026-10-31）．
 
+把持力制御（論文 Lach et al. IROS 2024 の再現・移植，2026-11-01，詳細と全数値は [docs/FORCE_CONTROL.md](docs/FORCE_CONTROL.md)）:
+- 公開実装 `llach/learning_fc` には**ライセンス表記がない**．コードはコピーせず，論文（arXiv 2311.07245v1，CC BY 4.0）から再実装する．論文・コード・SO-101の対応表と，1自由度では再現できない要素は同文書§1．
+- 既存モデルの「指令→力」（`grip_command_probe`）: 接触角から約−20 mrad以内なら飽和せず力は指令で変わる．以前の飽和は閉指令−0.17 radのせい．力/角度の傾きは物体質量で約4倍変わる（soft contactの人工的な依存）．
+- 独立環境 `force_grasp.rs` + `scenes/so101_force_grasp.xml`: 4面の表皮板をばね・ダンパ付きスライド関節で芯に付けた柔軟物体（**F = k·d + c·ḋ を陽に持つ**．めり込みは別に記録）．潰れる前はジョー法線力＝ばね力（0.05 N以内）．
+- 成立性（学習なし，20試行）: 力PIは平均力を目標±0.005 N以内に保った（潰れ1/20）．固定閉指令は20/20で潰す（39 N）．課題は接触直後のピーク（中央値6.6 N・最大34 N，1自由度で物体をすき間分押し渡すため）．PPO学習は未実施．
+- テスト: Rust 64件（`tests/force_grasp.rs` 6件を追加），pytest 166件成功（2026-11-01）．
+
 未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり），物理モデルの修正（別ブランチで行う）．
 
 ## 8. 次の作業（優先順）
@@ -178,4 +185,5 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
 - 既存checkpointは `runs/so101-reach-5mm/base-policy/best.zip`、`runs/so101-reach-hold/best.zip`（gitには含めない）。
 - `nix develop` のshellHookは `PYTHONPATH` を上書きする．別のビルドを使うときは `nix develop -c bash -c 'export PYTHONPATH=…; …'` の中で設定する．
 - 学習・評価のプロセスが editable の `_native*.so` を読み込んでいる間は `maturin develop` しない（実行中プロセスの.soを置き換えてしまう）．待てない場合は `maturin build -o DIR` ＋ `pip install --target` で別の場所にwheelを入れて使う．
+- 既存シーン（立方体中心12.5 mm）でグリッパを閉じると，ジョーのメッシュがテーブルに当たり腕を押し戻すことがある（力制御環境で発見，Pick & Placeへの影響は未検証）．力制御環境は物体を高さ40 mmにして回避した．
 - 摩擦DRの下限は0.01（以前は0.05で，μ=0.03の評価が拒否された）．

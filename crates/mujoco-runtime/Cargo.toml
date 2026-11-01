@@ -64,3 +64,7 @@ path = "../../examples/rust/penetration_probe.rs"
 [[example]]
 name = "grip_command_probe"
 path = "../../examples/rust/grip_command_probe.rs"
+
+[[example]]
+name = "force_grasp_probe"
+path = "../../examples/rust/force_grasp_probe.rs"

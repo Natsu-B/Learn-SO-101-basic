@@ -55,9 +55,9 @@ Mac mini M1（aarch64-darwin）。すべて `nix develop` 内で実行する。
 nix develop                     # .venv があれば自動activate
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
-cargo test --workspace          # 2026-11-01 時点: 65件成功
+cargo test --workspace          # 2026-11-01 時点: 66件成功
 maturin develop                 # Pythonテスト前に native extension を再ビルド
-pytest -q                       # 2026-11-01 時点: 176 passed
+pytest -q                       # 2026-11-01 時点: 178 passed
 
 # Pick & Place（IK版）評価: 引数 = エピソード数, 先頭seed。JSON lines を stdout、要約を stderr
 cargo run --release -p mujoco-runtime --example so101_pick_place -- 200 0
@@ -159,6 +159,9 @@ Python依存を入れ直す場合: `uv venv --python "$NIX_PYTHON" --seed && uv 
   - 押し渡しを遅くすれば衝突は避けられる（0.015 rad/sで潰れ12.5%）が5 sに収まらない．押すだけで潰れる物体は3%．
   - 失敗した設定: 全開0.6 radから開始（接触しない），SO-101版φ = 0.1（押し渡しが進まない），毎周期のピーク罰・ゼロからの強いピーク罰（全開で接触回避）．
 - テスト（PPO追加後）: Rust 65件，pytest 176件成功．
+- 失敗の分解（FORCE_CONTROL.md §10，`runs/force-grasp-eval/diag2-200`）: グリッパ単独の安全把持の成功は力PI 16.5%・二段階PI 18.5%・P1 15.0%・P8 17.0%（45%が非接触）・P9（接触獲得を達成条件にした報酬）19.0%．潰れの大半は目標力の前の押し渡し中（可動ジョーが物体を固定ジョーへ押す間に面が最大圧縮）．ゆっくり押しても36%で起き，グリッパ単独制御の限界と判断．
+  - 腕の把持方向の微小補正（`ForceGraspSim::shift_arm`，`ArmAssistPi`，別実験）で成功44.0%・物体移動1.8 mm・潰れ20%．次のRL候補は行動に腕補正を加えたPPO（未実施）．
+  - テスト: Rust 66件，pytest 178件成功．
 
 未検証・未実装: PDFレポート，立方体yaw≠0，Placeの学習，球体のPlace（転がり），物理モデルの修正（別ブランチで行う）．
 

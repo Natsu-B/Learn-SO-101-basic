@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from robot_sim.force_grasp_env import ForceGraspConfig, ForceGraspEnv
+from robot_sim.force_grasp_env import ArmAssistPi, ForceGraspConfig, ForceGraspEnv, TwoStagePi
 from robot_sim.force_grasp_learning import FINAL_SEEDS, aggregate, run_episode
 
 COLUMNS = [
@@ -57,7 +57,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output", required=True)
     p.add_argument("--controllers", nargs="+", default=["fixed", "pi"],
-                   help="fixed, pi, or ppo:NAME=PATH/best.zip")
+                   help="fixed, pi, tspi[:k=v,...] (two-stage PI), armpi[:k=v,...] "
+                        "(arm-assisted, separate experiment), or ppo:NAME=PATH/best.zip")
     p.add_argument("--first-seed", type=int, default=FINAL_SEEDS)
     p.add_argument("--episodes", type=int, default=100)
     p.add_argument("--kappa-grid", type=int, default=0)
@@ -76,6 +77,11 @@ def main():
             model, cfg = load_ppo(path)
             env = ForceGraspEnv(cfg)
             controller = "ppo"
+        elif spec.split(":")[0] in ("tspi", "armpi"):
+            kind, _, args = spec.partition(":")
+            kw = {k: float(v) for k, v in (a.split("=") for a in args.split(",") if a)}
+            name, model, env = spec, None, base
+            controller = (TwoStagePi if kind == "tspi" else ArmAssistPi)(**kw)
         else:
             name, model, env, controller = spec, None, base, spec
         env.set_progress(1.0)

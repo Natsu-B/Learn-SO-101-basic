@@ -141,3 +141,39 @@ def test_evaluate_runs_ppo_interface(env):
 
     rows = evaluate(env, [8_000_000], "ppo", Zero())
     assert rows[0]["contact_step"] is None, "a zero policy never closes"
+
+
+def test_two_stage_and_arm_assisted_pi_run_through_the_same_bookkeeping(env):
+    from robot_sim.force_grasp_env import ArmAssistPi, TwoStagePi
+
+    a = run_episode(env, 8_000_001, TwoStagePi())
+    b = run_episode(env, 8_000_001, ArmAssistPi())
+    assert a["controller"] == "two_stage_pi" and b["controller"] == "arm_assist_pi"
+    assert a["goal"] == b["goal"]
+    assert b["contact_step"] is not None
+    assert b["first_contact_jaw"] in ("moving", "both")
+
+
+def test_contact_safe_reward_never_pays_for_avoiding_contact():
+    totals = {}
+    for action in (-1.0, 1.0):  # close / stay open
+        e = ForceGraspEnv(ForceGraspConfig(reward="contact_safe", inductive_bias=False))
+        e.set_progress(1.0)
+        e.reset(options={"episode_seed": 7_000_001})
+        total, terms = 0.0, {}
+        done = False
+        while not done:
+            _, r, te, tr, info = e.step([action])
+            total += r
+            for k, v in info["reward_terms"].items():
+                terms[k] = terms.get(k, 0.0) + v
+            done = te or tr
+        totals[action] = total
+        e.close()
+        if action > 0:
+            assert terms["contact"] == -e.config.contact_bonus
+        else:
+            assert terms["contact"] == e.config.contact_bonus
+            assert terms["overload"] >= -e.config.safe_overload_clip
+            assert terms["crush"] >= -e.config.crush_penalty
+    assert totals[-1.0] > totals[1.0]

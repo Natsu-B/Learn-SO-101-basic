@@ -24,7 +24,7 @@ def main():
     p.add_argument("--eval-freq", type=int, default=10_000)
     p.add_argument("--eval-episodes", type=int, default=24)
     p.add_argument("--checkpoint-freq", type=int, default=10_000)
-    p.add_argument("--reward", choices=("paper", "paper_peak"), default="paper")
+    p.add_argument("--reward", choices=("paper", "paper_peak", "contact_safe"), default="paper")
     p.add_argument("--no-bias", action="store_true", help="disable the inductive bias")
     p.add_argument("--peak-weight", type=float, default=1.0)
     p.add_argument("--peak-margin", type=float, default=0.5)

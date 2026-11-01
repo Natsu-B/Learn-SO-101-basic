@@ -18,6 +18,7 @@ import numpy as np
 from .force_grasp_env import (
     ForceGraspConfig,
     ForceGraspEnv,
+    TwoStagePi,
     fixed_command_controller,
     pi_controller,
 )
@@ -38,7 +39,12 @@ def run_episode(env: ForceGraspEnv, seed: int, controller: str, model=None,
 
     obs, _ = env.reset(options={"episode_seed": seed, "kappa": kappa})
     act: Callable | None = None
-    if controller == "fixed":
+    if isinstance(controller, TwoStagePi):
+        controller.reset()
+        ctl = controller
+        act = lambda: ctl(env)  # noqa: E731
+        controller = getattr(ctl, "name", "two_stage_pi")
+    elif controller == "fixed":
         act = fixed_command_controller(env)
     elif controller == "pi":
         act = pi_controller(env, ForcePi())

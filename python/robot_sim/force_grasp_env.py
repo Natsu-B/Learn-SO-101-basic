@@ -38,7 +38,7 @@ except ImportError as error:  # pragma: no cover
 from ._native import CONTROL_PERIOD, GRIPPER_CLOSED, GRIPPER_OPEN, ForceGraspSimulator
 
 FRAME_SIZE = 10
-REWARDS = ("paper", "paper_peak")
+REWARDS = ("paper", "paper_peak", "contact_safe")
 
 
 def _lerp(a, b, t):
@@ -104,6 +104,18 @@ class ForceGraspConfig:
     # If set, the peak weight is annealed from this value to peak_weight
     # with the curriculum (as alpha2), so the policy first learns to grasp.
     peak_weight_start: float | None = None
+    # contact_safe (P9, docs §10.4): +contact_bonus once when both jaws first
+    # touch, -contact_bonus at truncation if they never did, so avoiding
+    # contact never pays; overload above max(1.5 f_goal, f_goal + 1 N)
+    # normalized by a fixed safe_force_scale (not by f_goal) and charged on
+    # increases of the running maximum, at most safe_overload_weight *
+    # safe_overload_clip per episode; -crush_penalty once at the first
+    # bottoming (reward only; the observation is unchanged).
+    contact_bonus: float = 20.0
+    safe_force_scale: float = 5.0
+    safe_overload_weight: float = 5.0
+    safe_overload_clip: float = 2.0
+    crush_penalty: float = 5.0
 
     def validate(self) -> None:
         if self.reward not in REWARDS:
@@ -179,6 +191,30 @@ class EpisodeMetrics:
             while k > 0 and ok[k - 1]:
                 k -= 1
             stable = k
+        # Decomposition (docs/FORCE_CONTROL.md §10): which jaw touched first,
+        # when the goal was first met, and when/where a face first bottomed.
+        touched = f > threshold
+        any_touch = touched.any(axis=1)
+        first_touch = int(np.argmax(any_touch)) if any_touch.any() else None
+        if first_touch is None:
+            first_jaw = None
+        elif touched[first_touch].all():
+            first_jaw = "both"
+        else:
+            first_jaw = "fixed" if touched[first_touch][0] else "moving"
+        goal_step = int(np.argmax(ok)) if ok.any() else None
+        bottom_steps = [k for k, s in enumerate(self.stats) if any(s["bottomed"])]
+        first_bottom = bottom_steps[0] if bottom_steps else None
+        if first_bottom is None:
+            bottom_phase = None
+        elif contact is None or first_bottom < contact - 1:
+            bottom_phase = "push"
+        elif first_bottom <= contact + 3:
+            bottom_phase = "contact"
+        elif goal_step is None or first_bottom < goal_step:
+            bottom_phase = "before_goal"
+        else:
+            bottom_phase = "after_goal"
         ratio = float(both[contact:].mean()) if contact is not None else 0.0
         lost_final = contact is not None and not bool(both[-window:].all())
         mean_abs = float(err.mean()) if n else float("nan")
@@ -194,6 +230,11 @@ class EpisodeMetrics:
             "max_abs_error": float(err.max()) if n else float("nan"),
             "relative_error": mean_abs / g if g else float("nan"),
             "final_force": tail.mean(axis=0).tolist() if n else [0.0, 0.0],
+            "any_contact": first_touch is not None,
+            "first_contact_jaw": first_jaw,
+            "goal_reached_step": goal_step,
+            "first_bottom_step": first_bottom,
+            "bottom_phase": bottom_phase,
             "peak_force_physics": float(peak_face),
             "peak_step": peak_step,
             "peak_phase": peak_phase,
@@ -280,6 +321,8 @@ class ForceGraspEnv(gym.Env):
         self.prev_action = 0.0  # applied (after the inductive bias)
         self.prev_raw_action = None
         self._max_over = 0.0
+        self._contact_rewarded = False
+        self._crush_charged = False
         self.steps = 0
         self._reading = reading
         self._last_pos = np.asarray(reading["object_position"])
@@ -423,6 +466,24 @@ class ForceGraspEnv(gym.Env):
                 r_peak = -over
             terms["peak"] = float(r_peak)
             reward += self.peak_weight * r_peak
+        if c.reward == "contact_safe":
+            peak = max(stats["max_jaw_force"])
+            limit = max(1.5 * self.goal, self.goal + 1.0)
+            over = min(max(0.0, peak - limit) / c.safe_force_scale, c.safe_overload_clip)
+            r_over = -max(0.0, over - self._max_over)
+            self._max_over = max(self._max_over, over)
+            r_contact = 0.0
+            if self.had_contact.all() and not self._contact_rewarded:
+                self._contact_rewarded = True
+                r_contact = c.contact_bonus
+            if self.steps + 1 >= c.max_steps and not self._contact_rewarded:
+                r_contact = -c.contact_bonus
+            r_crush = 0.0
+            if any(stats["bottomed"]) and not self._crush_charged:
+                self._crush_charged = True
+                r_crush = -c.crush_penalty
+            terms.update(overload=float(r_over), contact=r_contact, crush=r_crush)
+            reward += c.safe_overload_weight * r_over + r_contact + r_crush
         return float(reward), terms
 
     def _info(self, reading, stats) -> dict[str, Any]:
@@ -454,3 +515,82 @@ def pi_controller(env: ForceGraspEnv, pi):
         d = pi.act(list(env.f_obs), env.goal, CONTROL_PERIOD)
         return env.q_obs + float(np.clip(d, -PI_DELTA_LIMIT, PI_DELTA_LIMIT))
     return act
+
+
+class TwoStagePi:
+    name = "two_stage_pi"
+    """Strong scripted baseline (docs/FORCE_CONTROL.md §10.2).
+
+    Stage 1, no contact: close at ``free_speed``. Stage 2, one jaw touching
+    (the moving jaw pushes the object across the unobserved gap): close only
+    as far as the touching jaw's force stays below a push limit that starts
+    at ``push_ratio * f_goal`` and rises by ``push_ramp`` N/s while only one
+    jaw touches (table friction can exceed f_goal; the object must still be
+    slid to the fixed jaw), never faster than ``push_speed``. The speed cap
+    limits the impact on the fixed jaw.
+    Stage 3, both jaws touching: force PI (Rust ``ForcePi`` law) on the mean
+    force. Uses the policy's noisy observations and |dq| <= env dq_max.
+    """
+
+    def __init__(self, free_speed=0.6, push_speed=0.15, push_ratio=0.8, push_gain=1.0,
+                 push_ramp=1.0, kp=0.5, ki=2.0, stiffness=100.0):
+        self.free_speed, self.push_speed, self.push_ramp = free_speed, push_speed, push_ramp
+        self.push_ratio, self.push_gain = push_ratio, push_gain
+        self.gains = (kp, ki, stiffness)
+
+    def reset(self):
+        from ._native import ForcePi
+
+        kp, ki, k = self.gains
+        # Contact threshold 0: stage 3 starts from this controller's own
+        # contact flags, not the PI's.
+        self.pi = ForcePi(kp=kp, ki=ki, stiffness=k, closing_speed=0.0, threshold=-1.0)
+        self.push_time = 0.0
+
+    def __call__(self, env: ForceGraspEnv) -> float:
+        dq_max = env.config.dq_max
+        h = env.had_contact
+        if h.all():
+            d = self.pi.act(list(env.f_obs), env.goal, CONTROL_PERIOD)
+        elif h.any():
+            f = float(env.f_obs[1] if h[1] else env.f_obs[0])
+            ref = self.push_ratio * env.goal + self.push_ramp * self.push_time
+            self.push_time += CONTROL_PERIOD
+            scale = float(np.clip(self.push_gain * (ref - f) / ref, -1.0, 1.0))
+            d = -scale * self.push_speed * CONTROL_PERIOD
+        else:
+            d = -self.free_speed * CONTROL_PERIOD
+        return env.q_obs + float(np.clip(d, -dq_max, dq_max))
+
+
+class ArmAssistPi(TwoStagePi):
+    name = "arm_assist_pi"
+    """Separate experiment beyond the gripper-only task (docs §10.5).
+
+    While only the moving jaw touches, instead of pushing the object across
+    the gap it keeps that jaw's force near ``light_ratio * f_goal`` (at most
+    ``light_max`` N) and shifts the arm along the closing direction at
+    ``shift_speed`` m/s, so the fixed jaw comes to the object (the second
+    finger of the paper's gripper). Once both jaws touch the shift is held
+    and the force PI takes over. Needs teleport positioning.
+    """
+
+    def __init__(self, shift_speed=0.006, light_ratio=0.5, light_max=0.3, **kw):
+        super().__init__(**kw)
+        self.shift_speed, self.light_ratio, self.light_max = shift_speed, light_ratio, light_max
+
+    def reset(self):
+        super().reset()
+        self.shift = 0.0
+
+    def __call__(self, env: ForceGraspEnv) -> float:
+        h = env.had_contact
+        if h[1] and not h[0]:
+            limit = 0.012
+            self.shift = min(limit, self.shift + self.shift_speed * CONTROL_PERIOD)
+            env.sim.shift_arm(self.shift)
+            ref = min(self.light_ratio * env.goal, self.light_max)
+            scale = float(np.clip((ref - float(env.f_obs[1])) / ref, -1.0, 1.0))
+            d = -scale * self.push_speed * CONTROL_PERIOD
+            return env.q_obs + float(np.clip(d, -env.config.dq_max, env.config.dq_max))
+        return super().__call__(env)
